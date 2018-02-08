@@ -30,6 +30,7 @@ module Language.SMEIL.Syntax
   , BinOp(..)
   , UnOp(..)
   , Name(..)
+  , NamePart(..)
   , ArrayIndex(..)
   , Type(..)
   , Literal(..)
@@ -390,39 +391,33 @@ instance Located UnOp where
   locOf NotOp {..}   = locOf loc
 
 data Name
-  = IdentName { ident :: Ident
-             ,  loc   :: SrcLoc}
-  | HierAccess { base   :: Name
-              ,  idents :: [Name]
-              ,  loc    :: SrcLoc}
-  | ArrayAccess { name  :: Name
-               ,  index :: ArrayIndex
-               ,  loc   :: SrcLoc}
-  deriving (Ord, Show, Data, Typeable)
+  = Name { base  :: NamePart
+         , parts :: [NamePart]
+         , loc   :: SrcLoc
+         }
+    deriving (Eq, Ord, Show, Data, Typeable)
 
 instance References Name where
-  refOf IdentName {..}   = [ident]
-  refOf HierAccess {..}  = concatMap refOf (base:idents)
-  refOf ArrayAccess {..} = refOf name
-
-instance Eq Name where
-  IdentName {ident = ident1} == IdentName {ident = ident2} = ident1 == ident2
-  HierAccess {idents = ident1} == HierAccess {idents = ident2} =
-    ident1 == ident2
-  ArrayAccess {name = n1, index = i1} == ArrayAccess {name = n2, index = i2} =
-    n1 == n2 && i1 == i2
-  _ == _ = False
+  refOf Name {..} = concatMap refOf (base : parts)
 
 instance Located Name where
-  locOf IdentName {..}   = locOf loc
-  locOf HierAccess {..}  = locOf loc
-  locOf ArrayAccess {..} = locOf loc
+  locOf Name {..}   = locOf loc
 
-instance ToString Name where
-  toString (IdentName i _)     = toString i
-  toString (HierAccess i is _) = intercalate "_" (toString i : map toString is)
-  toString (ArrayAccess i _ _) = toString i ++ "_array_" -- TODO: What to do
-                                 -- her
+data NamePart
+  = IdentName { ident :: Ident
+              , loc   :: SrcLoc }
+  | ArrayAccess { namePart :: NamePart
+                , index    :: ArrayIndex
+                , loc      :: SrcLoc }
+  deriving (Eq, Ord, Show, Data, Typeable)
+
+instance References NamePart where
+  refOf IdentName {..}   = [ident]
+  refOf ArrayAccess {..} = refOf namePart
+
+instance Located NamePart where
+  locOf IdentName {..}   = locOf loc
+  locOf ArrayAccess {..} = locOf loc
 
 data ArrayIndex
   = Wildcard

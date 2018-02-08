@@ -30,8 +30,8 @@ import           Language.SMEIL.Parser
 import           Language.SMEIL.Syntax
 
 
-import           Debug.Trace                 (trace)
---import           Text.Show.Pretty            (ppShow)
+-- import           Debug.Trace                 (trace)
+-- import           Text.Show.Pretty            (ppShow)
 
 import           SME.Error
 
@@ -101,21 +101,30 @@ parseImport dir ns prefixes =
              (fn modName)))
 
 -- FIXME: avoid this code duplication of the function above
-importName :: Import -> [Ident]
-importName SimpleImport {..}   = fromMaybe modName ((: []) <$> qualified)
-importName SpecificImport {..} = fromMaybe modName ((: []) <$> qualified)
+importName :: Import -> [[Ident]]
+importName SimpleImport {..}   = [fromMaybe modName ((: []) <$> qualified)]
+importName SpecificImport {..} =
+  let ents = map (: []) entities
+  in fromMaybe ents ((\q -> map (q :) ents) <$> qualified)
 
 -- | Returns all defined idents and base hierarchical accesses defined in a
 -- module.
 dfNames :: DesignFile -> [[Ident]]
 dfNames f =
-  map (: []) (universeBi f :: [Ident]) ++
-  map refOf (universeBi f :: [Name])
+  map (: []) (universeBi f :: [Ident]) ++ map refOf (universeBi f :: [Name])
 
--- getBaseIdent :: Name -> [Ident]
--- getBaseIdent IdentName {..}   = [ident]
--- getBaseIdent HierAccess {..}  = concatMap getBaseIdent (base:idents)
--- getBaseIdent ArrayAccess {..} = getBaseIdent name
+-- | Returns the names of all declarations in the program
+declNames :: DesignFile -> [[Ident]]
+declNames f =
+  map (: []) $
+  map nameOf (universeBi f :: [Variable]) ++
+  map nameOf (universeBi f :: [Constant]) ++
+  map nameOf (universeBi f :: [Bus]) ++
+  map nameOf (universeBi f :: [Function]) ++
+  map nameOf (universeBi f :: [Enumeration]) ++
+  map nameOf (universeBi f :: [Instance]) ++
+  map nameOf (universeBi f :: [Process]) ++
+  map nameOf (universeBi f :: [Network])
 
 -- | Prefix matching based union operation matching items on from list into into
 -- list. Returns names without matching prefix
@@ -181,11 +190,8 @@ addNameMap n1 n2 = do
   s <- get
   when ([n1] /= n2) $ put $ s {nameMap = B.insert n1 n2 (nameMap s)}
 
-lookupName :: (MonadIO m, MonadThrow m) => Ident -> PaM m (Maybe Ident)
-lookupName name = lookupName' [name]
-
-lookupName' :: (MonadIO m, MonadThrow m) => [Ident] -> PaM m (Maybe Ident)
-lookupName' name --trace (show name)
+lookupName :: (MonadIO m, MonadThrow m) => [Ident] -> PaM m (Maybe Ident)
+lookupName name --trace (show name)
  = do
   s <- gets nameMap
   let res = B.lookupR name s :: Maybe Ident
@@ -200,14 +206,15 @@ lookupPrefix = go . reverse
   where
     go [] = return Nothing
     go (x:xs) =
-      lookupName' (reverse (x : xs)) >>= \case
+      lookupName (reverse (x : xs)) >>= \case
         Just r -> return $ Just (length xs + 1, r)
         Nothing -> go xs
 
 -- | Transform top-level names and add
 renameModule ::
-     (MonadThrow m, MonadIO m) => [Ident] -> DesignFile -> PaM m DesignFile
-renameModule n f = transformBiM renameProc f >>= transformBiM renameNet
+     (MonadThrow m, MonadIO m) => [Ident] -> Bool -> DesignFile -> PaM m DesignFile
+renameModule n asSpecific f =
+  transformBiM renameProc f >>= transformBiM renameNet
   -- Pre populate map with possible module names
   where
     renameProc p@Process {name = name}
@@ -227,35 +234,42 @@ renameModule n f = transformBiM renameProc f >>= transformBiM renameNet
                 else "_")) ++
             val)
            loc
-    addMaps name = addNameMap (newName name) (n ++ [name])
+    addMaps name =
+      addNameMap
+        (newName name)
+        (if asSpecific
+           then [name]
+           else n ++ [name])
 
 renameRefs :: (MonadThrow m, MonadIO m) => DesignFile -> PaM m DesignFile
 renameRefs = transformBiM go
   where
-    go ArrayAccess {..} = go name
-    go h@HierAccess {..} =
-      let b = refOf h
+    go o@Name {..} =
+      let b = refOf o
       in lookupPrefix b >>= \case
            Just (n, ha) ->
              return $
-             HierAccess
+             Name
                (IdentName ha (SrcLoc $ locOf ha))
-               (drop n (base : idents))
+               (drop n (base : parts))
                loc
-           Nothing -> return h
-    go i@IdentName {..} =
-      lookupName ident >>= \case
-        Just n -> return $ IdentName n loc
-        Nothing -> return i
+           Nothing -> return o
 
+-- DONE: When we have unqualified specific imports of names, we need to make
+-- sure that these names does not clash with any definitions in the program. For
+-- eaxmple, a reference to a name foo from within a process defined in a module
+-- that imports an entity foo from another module is ambiguous. Solve this by
+-- gathering the names of all defined entities and making sure that name clashes
+-- occur.
 -- TODO: Use forward-passed list of defined names to ensure that we don't rename
 -- modules such that name-clashes will occur
 parseModule :: (MonadThrow m, MonadIO m) => ModuleCtx -> PaM m DesignFile
 parseModule ModuleCtx {..} = do
   res <- liftIO $ parseFile modulePath stmLocation
   let imports = universeBi res :: [Import]
-      importPrefixes = map importName imports
+      importPrefixes = concatMap importName imports
       names = dfNames res
+      decNames = declNames res
   -- liftIO $ putStrLn ("parentImportPrefixes " ++ ppShow parentImportPrefixes)
   -- liftIO $ putStrLn ("names " ++ ppShow names)
   -- If we have a module foo/bar containing a process baz and we import foo.bar,
@@ -266,17 +280,18 @@ parseModule ModuleCtx {..} = do
   -- ents then ents'
   let ents' =
         if null importedNames
-          then getFirstNames (prefixUnion parentImportPrefixes parentNames)
+          then getFirstNames (prefixUnion parentImportPrefixes parentNames) -- not neded TODO
           else importedNames
-  -- liftIO $ putStrLn $ ppShow ents'
+  -- liftIO $ putStrLn ("ents " ++ ppShow ents')
   let topNames = topLevelDefs res
-  checkNames ents' topNames
+  areNamesDefined ents' topNames
+  areNamesUnique decNames importPrefixes
   -- Forward pass: List of defined names. Should include accumulated entries
   -- TODO: How to filter out unused entities when an entire module is defined
   -- Get a list of names following prefixes, match those against the defined top
   -- level names of the imported module.
   let filtered = filterModule ents' res
-  renamed <- renameModule moduleName filtered
+  renamed <- renameModule moduleName (not $ null importedNames) filtered
   mods <-
     mapM (parseModule . parseImport modulePath names importPrefixes) imports
   -- Backwards pass: We know what names should be. Do prefix matching.
@@ -285,15 +300,19 @@ parseModule ModuleCtx {..} = do
   return $ foldl (<>) renamed' mods
     -- Check that all imported names are defined
   where
-    checkNames lns names = do
+    areNamesDefined lns names = do
       let diff = lns \\ names
       unless (null diff) $
         throw $ UndefinedIdentifierError (map toString diff) stmLocation
+    areNamesUnique reqNames defs =
+      case nub reqNames `intersect` nub defs of
+        [] -> return ()
+        a  -> throw $ IdentifierClashError (map show a) stmLocation
 
 resolveImports :: (MonadThrow m, MonadIO m) => FilePath -> m DesignFile
 resolveImports fp = do
   fp' <- liftIO $ makeAbsolute fp
   (m, _) <-
     runStateT (parseModule (mkModuleCtx {modulePath = fp'})) mkRenameState
-  --liftIO $ print ma
+  -- liftIO $ print ma
   return m

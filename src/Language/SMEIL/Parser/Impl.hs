@@ -206,19 +206,13 @@ statement =
     returnStm = reserved "return" >> S.Return <$> optional expression <* semi
 
 name :: Parser S.Name
-name = namePart >>= rest <?> "name"
-  where
-    rest context =
-      choice
-        [ dot >>
-          makePos
-            (S.HierAccess <$> pure context <*> namePart `sepBy1` dot)
-        , pure context
-        ]
-    namePart = do
-      ident' <- withPos (S.IdentName <$> ident)
-      choice
-        [makePos $ S.ArrayAccess ident' <$> brackets arrayIndex, pure ident']
+name = withPos $ S.Name <$> namePart <*> (optional dot >> namePart `sepBy` dot)
+
+namePart :: Parser S.NamePart
+namePart = do
+  putPos
+  ident' <- makePos (S.IdentName <$> ident)
+  choice [makePos $ S.ArrayAccess ident' <$> brackets arrayIndex, pure ident']
 
 arrayIndex :: Parser S.ArrayIndex
 arrayIndex = (symbol "*" >> pure S.Wildcard) <|> S.Index <$> expression

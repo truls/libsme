@@ -210,8 +210,10 @@ instance Pretty UnOp where
   ppr (NotOp _)   = text "!"
 
 instance Pretty Name where
+  ppr (Name i is _) = cat $ punctuate dot (map ppr (i:is))
+
+instance Pretty NamePart where
   ppr (IdentName i _)     = ppr i
-  ppr (HierAccess i is _) = cat $ punctuate dot (map ppr (i:is))
   ppr (ArrayAccess n e _) = ppr n <> brackets (ppr e)
 
 instance Pretty ArrayIndex where
