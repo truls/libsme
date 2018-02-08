@@ -303,11 +303,12 @@ parseModule ModuleCtx {..} = do
     areNamesDefined lns names = do
       let diff = lns \\ names
       unless (null diff) $
-        throw $ UndefinedIdentifierError (map toString diff) stmLocation
+        throw $ UndefinedIdentifierError (map nameOf diff) stmLocation
     areNamesUnique reqNames defs =
-      case nub reqNames `intersect` nub defs of
-        [] -> return ()
-        a  -> throw $ IdentifierClashError (map show a) stmLocation
+      -- TODO: Location in error message
+      let a = reqNames `intersect` defs
+      in unless (null a) $
+         throw $ IdentifierClashError (map nameOf (getFirstNames a)) stmLocation
 
 resolveImports :: (MonadThrow m, MonadIO m) => FilePath -> m DesignFile
 resolveImports fp = do
