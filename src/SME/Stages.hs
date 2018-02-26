@@ -67,5 +67,5 @@ instance Read Stages where
 compile :: Config -> IO ()
 compile conf = do
   res <- resolveImports (inputFile conf) >>= typeCheck
-  --putStrLn $ pprr res
+  putStrLn $ pprr res
   return ()

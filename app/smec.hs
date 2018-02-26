@@ -15,11 +15,11 @@ optParser :: Parser Config
 optParser =
   Config <$>
   strOption
-    (long "input" <> metavar "IN" <> short 'i' <> value "-" <>
-     help "Input file. Defaults to stdin.") <*>
+    (long "input" <> metavar "IN" <> short 'i' <>
+     help "Input file. Specify - for stdin.") <*>
   strOption
     (long "output" <> metavar "OUT" <> short 'o' <> value "output" <>
-     help "Output directory. Defaults to output") <*>
+     help "Output directory. Defaults to output.") <*>
   (nub <$>
    many
      (option

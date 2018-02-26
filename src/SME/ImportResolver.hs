@@ -28,12 +28,11 @@ import           System.FilePath.Posix       (joinPath, takeDirectory, (<.>),
 
 import           Language.SMEIL.Parser
 import           Language.SMEIL.Syntax
-
+import           SME.Error
 
 -- import           Debug.Trace                 (trace)
 -- import           Text.Show.Pretty            (ppShow)
 
-import           SME.Error
 
 data RenameState = RenameState
   { nameMap    :: B.Bimap Ident [Ident]
@@ -152,18 +151,23 @@ getFirstNames = nub . concatMap go
 -- | Return module containing only imported top level names and no imports
 filterModule :: [Ident] -> DesignFile -> DesignFile
 filterModule required df@DesignFile {..} = DesignFile (map go units) loc
+  -- TODO: Extend dependency tracking with a list mapping functions to their
+  -- dependencies. This allows us to remove unused functions that were included
+  -- as dependencies of functions we removed.
   where
     procs = universeBi df :: [Process]
     nets = universeBi df :: [Network]
     -- Include module dependencies in required modules
-    -- FIXME: Partial function
     -- Assumption: Since all in-module dependencies are declared as IdentNames
     -- in the top-level, taking the first component of each hier access name
     -- will work.
     required' =
       required ++
-      (map head (concatMap processDeps procs) `intersect` topLevelDefs df) ++
-      (map head (concatMap networkDeps nets) `intersect` topLevelDefs df)
+      (concatMap safeHead (concatMap processDeps procs) `intersect` topLevelDefs df) ++
+      (concatMap safeHead (concatMap networkDeps nets) `intersect` topLevelDefs df)
+    safeHead []    = []
+    safeHead (x:_) = [x]
+
     go DesignUnit {unitElement = unitElement, loc = duloc} =
       if null required
         then DesignUnit [] unitElement loc
@@ -210,7 +214,7 @@ lookupPrefix = go . reverse
         Just r -> return $ Just (length xs + 1, r)
         Nothing -> go xs
 
--- | Transform top-level names and add
+-- | Transform top-level names and add maps, tracking the transformed names in a map
 renameModule ::
      (MonadThrow m, MonadIO m) => [Ident] -> Bool -> DesignFile -> PaM m DesignFile
 renameModule n asSpecific f =
@@ -227,12 +231,13 @@ renameModule n asSpecific f =
       return (p {name = newName name} :: Network)
     newName Ident {..} =
       let n' = toModName n
+         -- Return new name prefixed with _ to avoid clashing with existing
+        -- namespace
+        -- TODO: Avoid the _ prefix by explicitly checking for name clashes
       in Ident
-           ((n' ++
-             (if null n'
-                then ""
-                else "_")) ++
-            val)
+           ((if null n'
+              then ""
+              else "_" ++ n' ++ "_") ++ val)
            loc
     addMaps name =
       addNameMap
@@ -241,6 +246,7 @@ renameModule n asSpecific f =
            then [name]
            else n ++ [name])
 
+-- | Rename all references to renamed modules accordingly
 renameRefs :: (MonadThrow m, MonadIO m) => DesignFile -> PaM m DesignFile
 renameRefs = transformBiM go
   where
@@ -287,9 +293,6 @@ parseModule ModuleCtx {..} = do
   areNamesDefined ents' topNames
   areNamesUnique decNames importPrefixes
   -- Forward pass: List of defined names. Should include accumulated entries
-  -- TODO: How to filter out unused entities when an entire module is defined
-  -- Get a list of names following prefixes, match those against the defined top
-  -- level names of the imported module.
   let filtered = filterModule ents' res
   renamed <- renameModule moduleName (not $ null importedNames) filtered
   mods <-
@@ -315,5 +318,6 @@ resolveImports fp = do
   fp' <- liftIO $ makeAbsolute fp
   (m, _) <-
     runStateT (parseModule (mkModuleCtx {modulePath = fp'})) mkRenameState
+  -- TODO: Return name map and use it when displaying error messages
   -- liftIO $ print ma
   return m
