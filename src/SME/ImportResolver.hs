@@ -13,6 +13,7 @@ module SME.ImportResolver
 
 import           Prelude                     hiding (span)
 
+import           Control.Arrow               (first)
 import           Control.Exception           (throw)
 import           Control.Monad               (unless)
 import           Control.Monad.Catch         (MonadThrow)
@@ -23,6 +24,7 @@ import           Data.List                   (intersect, nub, (\\))
 import           Data.List.NonEmpty          (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty          as N
 import           Data.Loc
+import qualified Data.Map.Strict             as M
 import           Data.Maybe                  (fromMaybe)
 import           Data.Semigroup              ((<>))
 import qualified Data.Text                   as T
@@ -34,9 +36,6 @@ import           System.FilePath.Posix       (joinPath, takeDirectory, (<.>),
 import           Language.SMEIL.Parser
 import           Language.SMEIL.Syntax
 import           SME.Error
-
--- import           Debug.Trace                 (trace)
--- import           Text.Show.Pretty            (ppShow)
 
 
 data RenameState = RenameState
@@ -317,11 +316,11 @@ parseModule ModuleCtx {..} = do
       in unless (null a) $
          throw $ IdentifierClashError (map nameOf (getFirstNames a)) stmLocation
 
-resolveImports :: (MonadThrow m, MonadIO m) => FilePath -> m DesignFile
+resolveImports ::
+     (MonadThrow m, MonadIO m) => FilePath -> m (DesignFile, M.Map String Ref)
 resolveImports fp = do
   fp' <- liftIO $ makeAbsolute fp
-  (m, _) <-
+  (m, s) <-
     runStateT (parseModule (mkModuleCtx {modulePath = fp'})) mkRenameState
-  -- TODO: Return name map and use it when displaying error messages
-  -- liftIO $ print ma
-  return m
+  -- TODO: Maybe the BiMap is redundant
+  return (m, M.fromList (map (first toString) (B.toList (nameMap s))))

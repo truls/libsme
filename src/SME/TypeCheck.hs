@@ -13,10 +13,10 @@ module SME.TypeCheck
   ) where
 
 import           Control.Arrow               (first)
-import           Control.Exception           (throw)
+import           Control.Exception           (catch, throw)
 import           Control.Monad               (foldM, forM, forM_, unless,
                                               zipWithM)
-import           Control.Monad.Except        (MonadError)
+import           Control.Monad.Except        (MonadError, catchError)
 
 import           Control.Monad.Identity      (Identity)
 import           Control.Monad.IO.Class      (liftIO)
@@ -304,11 +304,9 @@ checkDef i@InstDef {} =
 checkDef p@ParamDef {} =
   return p
 
-
-
 checkTopDef :: (MonadRepr Void m) => TopDef -> m ()
 checkTopDef ProcessTable { ..} = do
-  mapDefs procName checkDef
+  updateDefsM_ procName checkDef
   body' <- withScope procName $ mapM checkStm stms
   updateTopDef procName  (\x -> x { stms = body'} )
 checkTopDef NetworkTable {..} =
@@ -328,13 +326,13 @@ buildDeclTab :: (MonadRepr s m) => Ident -> [Declaration] -> m (M.HashMap String
 buildDeclTab ctx = foldM go M.empty
   where
     go m (VarDecl v@Variable {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (VarDef name v Void) m
+      ensureUndef name m $ return $ M.insert (toString name) (VarDef name v Unused Void) m
     go m (ConstDecl c@Constant {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c Void) m
+      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c Unused Void) m
     go m (BusDecl b@Bus {..}) =
       ensureUndef name m $
       return $
-      M.insert (toString name) (BusDef name [ctx, name] (busToShape b) b Void) m
+      M.insert (toString name) (BusDef name [ctx, name] (busToShape b) b Unassigned Void) m
     go m (FuncDecl f@Function {..}) =
       ensureUndef name m $ return $ M.insert (toString name) (FunDef name f Void) m
     go m (EnumDecl e@Enumeration {..})
@@ -396,11 +394,11 @@ buildNetTab net@Network {name = n, netDecls = d} = do
   return $ NetworkTable tab n M.empty net Void
   where
     go m (NetConst c@Constant {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c Void) m
+      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c Unused Void) m
     go m (NetBus b@Bus {..}) =
       ensureUndef name m $
       return $
-      M.insert (toString name) (BusDef name [n, name] (busToShape b) b Void) m
+      M.insert (toString name) (BusDef name [n, name] (busToShape b) b Unassigned Void) m
     go m (NetInst i@Instance {..}) =
       let name
             -- Identifiers cannot start with _ so we have those names reserved
@@ -499,7 +497,7 @@ inferParamTypes insts = do
             -> do
              let actualName = fromMaybe forName ident
              unless (forName == actualName) $
-               throw $ NamedParameterMismatch forName actualName
+               throw $ NamedParameterMismatch forName actualName elName
               -- For every parameter, return a name, type tuple.
              case forDir of
                Const _ -> do
@@ -585,11 +583,7 @@ buildEnv df = do
 -- annoations
 --typeCheck :: (MonadIO m) => DesignFile -> m DesignFile
 -- typeCheck :: DesignFile -> DesignFile
-typeCheck :: DesignFile -> IO DesignFile
+typeCheck :: DesignFile -> IO Env
 typeCheck df = do
-  let res = runWriterT $ unTyM (buildEnv df)
-      res' = runReprMidentity (mkEnv Void) res
-  liftIO $ putStrLn $ ppShow res'
-  return df
-  -- liftIO $ putStrLn $ ppShow e
-  -- liftIO $ putStrLn $ ppShow w
+  let (_, env) = runReprMidentity (mkEnv Void) (runWriterT $ unTyM (buildEnv df))
+  return env

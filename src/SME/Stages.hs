@@ -1,4 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
 
 -- | Stage manager module. Manages the compilation process and
 
@@ -9,16 +10,17 @@ module SME.Stages
   , compile
   ) where
 
+import           Control.Exception     (throw, tryJust)
 import           Control.Monad         (when)
 import           Control.Monad.Reader
 import           Data.Char             (isLetter, toLower)
-import qualified Data.Map              as M
+import qualified Data.Text.IO          as TIO
 import           Text.Show.Pretty      (ppShow)
 
 import           Language.SMEIL.Pretty
+import           SME.Error
 import           SME.ImportResolver
 import           SME.TypeCheck
-
 
 data Stages
   = ResolveImport
@@ -39,6 +41,9 @@ data Config = Config
                             -- checking
   , warnings         :: Bool -- ^ Enable warnings
   }
+
+dumpStage :: Config -> Stages -> Bool
+dumpStage c s = s `elem` dumpStages c
 
 data CompilerState = CompilerState
   { config    :: Config -- ^ The global compilation pipeline configuration
@@ -66,6 +71,14 @@ instance Read Stages where
 
 compile :: Config -> IO ()
 compile conf = do
-  res <- resolveImports (inputFile conf) >>= typeCheck
-  putStrLn $ pprr res
+  (df, nameMap) <- resolveImports (inputFile conf)
+  when (dumpStage conf ResolveImport) $ TIO.putStrLn $ pprr df
+  res <-
+    tryJust
+      (\(e :: TypeCheckErrors) -> Just (renderError nameMap e))
+      (typeCheck df)
+  tyEnv <- case res of
+            Left e  -> throw $ CompilerError e
+            Right r -> pure r
+  when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
   return ()

@@ -1,12 +1,14 @@
 module Main where
 
-import           Control.Exception   (throwIO)
+import           Control.Exception   (catch, throwIO)
 import           Control.Monad       (unless, when)
 import           Data.List           (intercalate, nub)
 import           Data.Semigroup      ((<>))
 import           Options.Applicative
 import           System.Directory    (createDirectory, doesDirectoryExist,
                                       doesFileExist)
+import           System.Exit         (exitFailure)
+import           System.IO           (hPutStr, stderr)
 
 import           SME.Error
 import           SME.Stages
@@ -39,7 +41,7 @@ optParser =
   switch (long "no-warnings" <> short 'w' <> help "Disable warnings")
   where
     stagesPP =
-      intercalate ", " (map show [ResolveImport, TypeCheck, Optimize]) ++
+      intercalate ", " (map show [ResolveImport, TypeCheck]) ++
       " or " ++ show CodeGen
 
 optsParser :: ParserInfo Config
@@ -52,8 +54,12 @@ optsParser =
 main :: IO ()
 main = do
   opts <- execParser optsParser
-  doesFileExist (inputFile opts) >>= flip unless (throwIO $ FileNotFound $ inputFile opts)
+  doesFileExist (inputFile opts) >>=
+    flip unless (throwIO $ FileNotFound $ inputFile opts)
   exists <- doesDirectoryExist (outputDir opts)
-  when (exists && not (force opts)) (throwIO (DirAlreadyExists (outputDir opts)))
+  when
+    (exists && not (force opts))
+    (throwIO (DirAlreadyExists (outputDir opts)))
   unless exists $ createDirectory (outputDir opts)
-  compile opts
+  compile opts `catch` (\(CompilerError e) -> do hPutStr stderr (show e)
+                                                 exitFailure )

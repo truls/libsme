@@ -15,6 +15,7 @@ module SME.Representation
   , BaseTopDef(..)
   , BusShape(..)
   , BusState(..)
+  , VarState(..)
   , MonadRepr(..)
   , ParamType(..)
   , Void(..)
@@ -26,8 +27,8 @@ module SME.Representation
   ) where
 
 import           Control.Exception      (throw)
-import           Control.Monad.Except   (ExceptT, MonadError, catchError,
-                                         runExceptT)
+import           Control.Monad          (void)
+import           Control.Monad.Except   (ExceptT, MonadError, runExceptT)
 import           Control.Monad.Identity (Identity, runIdentity)
 import           Control.Monad.State    (MonadState, StateT, gets, modify,
                                          runStateT)
@@ -69,12 +70,10 @@ class ( Monad m
       , MonadError TypeCheckErrors m
       ) =>
       MonadRepr s m where
-
   lookupDef :: (References a) => a -> m (BaseDefType s)
   lookupDef r = do
     (_, res) <- lookupDef' r
     return res
-
   lookupDef' :: (References a) => a -> m ([Ident], BaseDefType s)
   lookupDef' r = go (trace ("Lookup called with " ++ show (refOf r)) (refOf r))
       -- Three cases.
@@ -84,56 +83,76 @@ class ( Monad m
       -- Case three: Name [Ident, ...] refers to a top-level name. Switch
       -- scope, remaining name compounds should fall into previous cases
     where
-      --go [] = throw $ InternalCompilerError "Empty reference."
-      go (i :| [])  = do
+      go (i :| []) = do
         d <- gets curBaseEnv
-        res <- lookupOrFail i (symTable d)
+        res <- lookupEx i (symTable d)
         return ([], res)
       go (i :| is) = do
         d <- gets curBaseEnv
-        lookupOrFail i (symTable d) >>= \case
+        lookupEx i (symTable d) >>= \case
           b@BusDef {} -> pure (is, b)
-          InstDef {instantiated = instantiated} ->
-            -- FIXME: N.fromList is a partial function
-            withScope instantiated (go (N.fromList is))
+          InstDef {instantiated = instantiated}
+            -- N.fromList is a partial function but is probably safe to use here
+            -- as the preceding pattern match of go matches the case where is is
+            -- empty
+           -> withScope instantiated (go (N.fromList is))
           ParamDef {paramType = BusPar {..}} ->
             case ref of
               (r':rs') -> withScope r' (go (N.fromList (rs' ++ is)))
               _ ->
                 throw $ InternalCompilerError "Bus reference is a single name"
-          _ ->
-            error
-              ("TODO: Proper error, Name is not of an indexable type " ++ show i) `catchError`
-            (\_ -> withScope i (go (N.fromList is)))
-
-  lookupTopDef :: (References a) => a -> m (BaseTopDef s)
+          _
+            -- If first name component doesn't resolve to a possible compound
+            -- name in current scope, it probably refers to a top-level
+            -- construct, so we look again in that
+           -> withScope i (go (N.fromList is))
+  lookupTopDef :: (References a, Located a, Pretty a) => a -> m (BaseTopDef s)
   lookupTopDef i =
     go $ trace ("lookupTopDef called with " ++ show (refOf i)) (refOf i)
     where
       go (ident :| []) = do
         ds <- gets defs
-        lookupOrFail ident ds >>= \case
+        lookupEx ident ds >>= \case
           EmptyTable ->
-            throw $ InternalCompilerError "Lookup returned empty table"
+            throw $ InternalCompilerError "Lookup returned EmptyTable"
           e -> pure e
-      go _ =
-        throw $
-        InternalCompilerError
-          "Compound name should not be present at this point"
-
-  updateTopDef :: (References a) => a -> (BaseTopDef s -> BaseTopDef s) -> m ()
+      go _
+        -- Top-level definitions will only be accessed through compound names if
+        -- they reside in imported modules. Any such accesses leading to defined
+        -- modules have been renamed by ImportResolver at this point. Therefore,
+        -- the use of such a name at this point means that the name refers to a
+        -- non-existing entity
+       = throw $ UndefinedName i
+  updateTopDef ::
+       (References a, Located a, Pretty a)
+    => a
+    -> (BaseTopDef s -> BaseTopDef s)
+    -> m ()
   updateTopDef i f = do
     def <- lookupTopDef i
     modify (\x -> x {defs = M.insert (toString (nameOf def)) (f def) (defs x)})
-
-  mapDefs :: (References a) => a -> (BaseDefType s -> m (BaseDefType s)) -> m ()
-  mapDefs d f = do
+  updateDefsM_ ::
+       (References a, Located a, Pretty a)
+    => a
+    -> (BaseDefType s -> m (BaseDefType s))
+    -> m ()
+  updateDefsM_ d f = do
     def <- lookupTopDef d
     let tab = symTable def
         ks = M.keys tab
         defs = M.elems tab
     res <- mapM f defs
     updateTopDef d (\x -> x {symTable = M.fromList (zip ks res)})
+  mapDefsM ::
+       (References a, Located a, Pretty a)
+    => a
+    -> (BaseDefType s -> m a)
+    -> m [a]
+  mapDefsM d f = do
+    def <- lookupTopDef d
+    let tab = symTable def
+        defs = M.elems tab
+    mapM f defs
   forUsedTopDefsM_ :: (BaseTopDef s -> m ()) -> m ()
   -- FIXME: The "used" here is probably a bug as unused top-level entities
   -- should be filtered away by
@@ -147,42 +166,37 @@ class ( Monad m
          f def)
       (S.toList u)
   addDefinition ::
-       (References a, Located b, ToString b) => a -> b -> BaseDefType s -> m ()
+       (References a, Located a, Pretty a, Located b, ToString b)
+    => a
+    -> b
+    -> BaseDefType s
+    -> m ()
   addDefinition topDef k v = do
     def <- lookupTopDef topDef
     symTab <-
       ensureUndef k (symTable def) $
       pure $ M.insert (toString k) v (symTable def)
     updateTopDef topDef (\x -> x {symTable = symTab})
-
   addUsedEnt :: (Nameable a) => a -> m ()
   addUsedEnt e = modify (\x -> x {used = S.insert (nameOf e) (used x)})
-
-  withScope :: (References a) => a -> m b -> m b
+  withScope :: (References a, Located a, Pretty a) => a -> m b -> m b
   withScope s act = do
     cur <- gets curBaseEnv
     e <- lookupTopDef s
     modify (\x -> x {curBaseEnv = e})
     act <* modify (\x -> x {curBaseEnv = cur})
-
   addTopDef :: BaseTopDef s -> m ()
   addTopDef d = do
     ds <- gets defs
     let n = toString $ nameOf d
     ensureUndef (nameOf d) ds $ modify (\s -> s {defs = M.insert n d (defs s)})
 
--- instance (Monad m) => MonadRepr (ReprM m)
-
-  --withScope :: (ToString a, Located a) => a -> m b -> m b
-  --lookupInstance :: String -> m [DefType]
-  --lookupInstances :: m [DefType]
-
-lookupOrFail ::
+lookupEx ::
      (ToString a, Pretty a, Located a, MonadRepr s m)
   => a
   -> M.HashMap String b
   -> m b
-lookupOrFail e m = case M.lookup (toString e) m of
+lookupEx e m = case M.lookup (toString e) m of
   Just r  -> pure r
   Nothing -> throw $ UndefinedName e
 
@@ -214,16 +228,19 @@ data Value
 
 -- | Type for representing definitions in SMEIL
 data BaseDefType a
-  = VarDef { varName :: Ident
-           , varDef  :: Variable
-           , ext     :: a}
-  | ConstDef { constName :: Ident
-             , constDef  :: Constant
-             , ext       :: a}
+  = VarDef { varName  :: Ident
+           , varDef   :: Variable
+           , varState :: VarState
+           , ext      :: a}
+  | ConstDef { constName  :: Ident
+             , constDef   :: Constant
+             , constState :: VarState
+             , ext        :: a}
   | BusDef { busName  :: Ident
            , busRef   :: [Ident]
            , busShape :: BusShape
            , busDef   :: Bus
+           , busState :: BusState
            , ext      :: a}
   | FunDef { funcName :: Ident
            , funcDef  :: Function
@@ -273,8 +290,14 @@ data ParamType
 data BusState
   = Input
   | Output
-  | Unused
+  | Local
+  | Unassigned
   deriving (Show, Eq)
+
+data VarState
+  = Used
+  | Unused
+  deriving (Eq, Show)
 
 data BaseTopDef a
   = ProcessTable { symTable :: M.HashMap String (BaseDefType a)

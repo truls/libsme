@@ -1,20 +1,31 @@
-{-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE GADTs          #-}
+{-# LANGUAGE DeriveAnyClass        #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE GADTs                 #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module SME.Error
   ( ImportingError(..)
   , FrontendErrors(..)
---  , CompilerErrors(..)
+  , CompilerError (..)
   , TypeCheckErrors(..)
+  , RenderError(..)
   ) where
 
 import           Control.Exception
+import           Data.Containers       (IsMap (..))
 import           Data.Loc
+import qualified Data.Map.Strict       as M
 import           Data.Maybe            (fromMaybe)
 
 import           Language.SMEIL.Pretty
-import           Language.SMEIL.Syntax (Nameable (..), ToString (..),
+import           Language.SMEIL.Syntax (Nameable (..), Ref, ToString (..),
                                         Typeness (..))
+newtype CompilerError =
+  CompilerError String
+  deriving (Exception)
+
+instance Show CompilerError where
+  show (CompilerError e) = show e
 
 data FrontendErrors
   = DirAlreadyExists FilePath
@@ -25,14 +36,6 @@ instance Show FrontendErrors where
   show (DirAlreadyExists fp) =
     "Directory " ++ fp ++ " already exists. Use --force to use it anyway"
   show (FileNotFound fp) = "File not found: " ++ fp
-
--- data CompilerErrors where
---   InternalCompilerError :: String -> CompilerErrors
---   deriving (Exception)
-
--- instance Show CompilerErrors where
---   show (InternalCompilerError msg) =
---     "Internal compiler error (probable compiler bug): " ++ msg
 
 data TypeCheckErrors where
   DuplicateName
@@ -51,29 +54,22 @@ data TypeCheckErrors where
     -> TypeCheckErrors
   ExpectedBus :: (ToString a, Located a) => a -> TypeCheckErrors
   ExprInvalidInContext :: (Pretty a, Located a) => a -> TypeCheckErrors
-  NamedParameterMismatch :: (ToString a, Located a) => a -> a -> TypeCheckErrors
+  NamedParameterMismatch
+    :: (ToString a, Located a, Nameable b) => a -> a -> b -> TypeCheckErrors
   BusShapeMismatch :: (Show a, Located b) => a -> a -> b -> TypeCheckErrors
   InstanceParamTypeMismatch :: (Located a) => a -> TypeCheckErrors
   ReferencedAsValue :: (Located a, Nameable a) => a -> TypeCheckErrors
   InternalCompilerError :: String -> TypeCheckErrors
   deriving (Exception)
 
-instance Show TypeCheckErrors where
-  show (DuplicateName new prev) =
-    "Name " ++
-    toString new ++
-    " already defined at " ++
-    displayLoc (locOf new) ++
-    ". Previous definition was " ++ displayLoc (locOf prev)
-  show (UndefinedName n) =
-    "Name " ++ pprr n ++ " is undefined at " ++ displayLoc (locOf n) ++ "."
-  show (TypeMismatchError t1 t2) =
-    "Cannot match type " ++
-    pprr t2 ++
-    " with expected type " ++ pprr t1 ++ ". At " ++ displayLoc (locOf t2)
-  show (ParamCountMismatch expected actual inst' ent) =
+class (IsMap map, Show ex) => RenderError map ex where
+  renderError :: map -> ex -> String
+
+--instance (IsMap m) => RenderError m TypeCheckErrors where
+instance RenderError (M.Map String Ref) TypeCheckErrors where
+  renderError m (ParamCountMismatch expected actual inst' ent) =
     "Wrong number of parameters. Entity " ++
-    toString (nameOf ent) ++
+    origName ent m ++
     " (at " ++
     displayLoc (locOf ent) ++
     ")" ++
@@ -81,19 +77,44 @@ instance Show TypeCheckErrors where
     pluralize expected "parameter" ++
     " but was instantiated with " ++
     pluralize actual "parameter" ++ " at " ++ displayLoc (locOf inst') ++ "."
+  renderError m (NamedParameterMismatch expected actual ent) =
+    "The name of parameter " ++
+    toString actual ++
+    " in instance declaration of " ++
+    origName ent m ++
+    " at " ++
+    displayLoc (locOf actual) ++
+    " is actually named " ++ toString expected ++ "."
+  renderError _ e = show e
+
+origName :: (Nameable a) => a -> M.Map String Ref -> String
+origName k m = case M.lookup (toString (nameOf k)) m of
+  Just r  -> pprrString r
+  Nothing -> toString (nameOf k)
+
+instance Show TypeCheckErrors where
+  show e@NamedParameterMismatch {} = renderError (M.empty :: M.Map String Ref) e
+  show e@ParamCountMismatch {} = renderError (M.empty :: M.Map String Ref) e
+  show (DuplicateName new prev) =
+    "Name " ++
+    toString new ++
+    " already defined at " ++
+    displayLoc (locOf new) ++
+    ". Previous definition was " ++ displayLoc (locOf prev)
+  show (UndefinedName n) =
+    "Name " ++
+    pprrString n ++ " is undefined at " ++ displayLoc (locOf n) ++ "."
+  show (TypeMismatchError t1 t2) =
+    "Cannot match type " ++
+    pprrString t2 ++
+    " with expected type " ++ pprrString t1 ++ ". At " ++ displayLoc (locOf t2)
   show (ExpectedBus i) =
     "Parameter " ++
     toString i ++
     " does not refer to a bus as expected at " ++ displayLoc (locOf i)
   show (ExprInvalidInContext e) =
     "Expression: " ++
-    pprr e ++ " is invalid in context at " ++ displayLoc (locOf e)
-  show (NamedParameterMismatch expected actual) =
-    "The name of parameter " ++
-    toString actual ++
-    " in instance declaration at " ++
-    displayLoc (locOf actual) ++
-    " is actually named " ++ toString expected ++ "."
+    pprrString e ++ " is invalid in context at " ++ displayLoc (locOf e)
   show (BusShapeMismatch expected actual inst) =
     "Unable to unify bus shapes in instantiation at " ++
     displayLoc (locOf inst) ++
@@ -125,18 +146,21 @@ instance Show ImportingError where
   show (IdentifierClashError ids l) =
     "Specific imports " ++
     prettyList ids ++
-    " clashes with names already definde in module." ++ importedFromMsg l
+    " clashes with names already defined in module." ++ importedFromMsg l
   show (ParseError s) = "Parse error at " ++ s
 
 importedFromMsg :: SrcLoc -> String
 importedFromMsg (SrcLoc NoLoc) = ""
 importedFromMsg (SrcLoc l)     = " Imported from " ++ displayLoc l
 
-prettyList :: (ToString s) => [s] -> String
+displayLoc' :: (Located a) => a -> String
+displayLoc' = displayLoc . locOf
+
+prettyList :: (ToString s, Located s) => [s] -> String
 prettyList []     = ""
-prettyList [x]    = toString x
-prettyList [x,y]  = toString x ++ " and " ++ toString y
-prettyList (x:xs) = toString x ++ ", " ++ prettyList xs
+prettyList [x]    = toString x ++ "(defined at " ++ displayLoc' x ++ ")"
+prettyList [x, y] = prettyList [x] ++ " and " ++ prettyList [y]
+prettyList (x:xs) = prettyList [x] ++ ", " ++ prettyList xs
 
 pluralize :: (Num a, Eq a, Show a) => a -> String -> String
 pluralize i s = pluralize' i s Nothing
