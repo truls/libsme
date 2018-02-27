@@ -3,6 +3,7 @@
 
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE RecordWildCards       #-}
 
 module SME.ImportResolver
@@ -18,10 +19,14 @@ import           Control.Monad.Catch         (MonadThrow)
 import           Control.Monad.State.Strict
 import qualified Data.Bimap                  as B
 import           Data.Generics.Uniplate.Data (transformBiM, universeBi)
-import           Data.List                   (intercalate, intersect, nub, (\\))
+import           Data.List                   (intersect, nub, (\\))
+import           Data.List.NonEmpty          (NonEmpty (..), (<|))
+import qualified Data.List.NonEmpty          as N
 import           Data.Loc
 import           Data.Maybe                  (fromMaybe)
 import           Data.Semigroup              ((<>))
+import qualified Data.Text                   as T
+import qualified Data.Text.IO                as TIO
 import           System.Directory            (doesFileExist, makeAbsolute)
 import           System.FilePath.Posix       (joinPath, takeDirectory, (<.>),
                                               (</>))
@@ -35,7 +40,7 @@ import           SME.Error
 
 
 data RenameState = RenameState
-  { nameMap    :: B.Bimap Ident [Ident]
+  { nameMap    :: B.Bimap Ident Ref
   , nameSource :: Integer
   } deriving (Show)
 
@@ -49,23 +54,23 @@ newtype Module = Module (String, [String], DesignFile, [Module])
   deriving (Show)
 
 data ModuleCtx = ModuleCtx
-  { moduleName           :: [Ident]   -- | The name that the module is imported as
-  , importedNames        :: [Ident]   -- | Specific names imported from module
-  , parentNames          :: [[Ident]] -- | Names defined in parent modules
-  , stmLocation          :: SrcLoc    -- | Location of import statement
-  , parentImportPrefixes :: [[Ident]] -- | Names imported from parent will be prefixed with
-  , modulePath           :: FilePath  -- | Path of module
+  { moduleName           :: Ref -- | The name that the module is imported as
+  , importedNames        :: [Ident] -- | Specific names imported from module
+  , parentNames          :: [Ref] -- | Names defined in parent modules
+  , stmLocation          :: SrcLoc -- | Location of import statement
+  , parentImportPrefixes :: [Ref] -- | Names imported from parent will be prefixed with
+  , modulePath           :: FilePath -- | Path of module
   }
 
 mkModuleCtx :: ModuleCtx
-mkModuleCtx = ModuleCtx [] [] [] noLoc [] ""
+mkModuleCtx = ModuleCtx (Ident "" noLoc :| []) [] [] noLoc [] ""
 
-toFileName :: FilePath -> [Ident] -> FilePath
-toFileName _ []  = ""
-toFileName fp ss = takeDirectory fp </> joinPath (map toString ss) <.> ".sme"
+toFileName :: FilePath -> Ref -> FilePath
+toFileName fp ss =
+  takeDirectory fp </> joinPath (map toString (N.toList ss)) <.> ".sme"
 
-toModName :: (ToString a) => [a] -> String
-toModName ids = intercalate "_" (map toString ids)
+toModName :: (ToString a) => NonEmpty a -> T.Text
+toModName ids = T.intercalate "_" (map toText (N.toList ids))
 
 importError :: FilePath -> SrcLoc -> IO ()
 importError f ss = throw $ ImportNotFoundError f ss
@@ -73,18 +78,18 @@ importError f ss = throw $ ImportNotFoundError f ss
 parseFile :: (MonadThrow m, MonadIO m) => FilePath -> SrcLoc -> m DesignFile
 parseFile fp ss = do
   liftIO $ doesFileExist fp >>= flip unless (importError fp ss)
-  modSrc <- liftIO $ readFile fp
+  modSrc <- liftIO $ TIO.readFile fp
   case parse fp modSrc of
     (Right r) -> return r
     (Left l)  -> throw $ ParseError l
 
-parseImport :: FilePath -> [[Ident]] -> [[Ident]] -> Import -> ModuleCtx
+parseImport :: FilePath -> [Ref] -> [Ref] -> Import -> ModuleCtx
 parseImport dir ns prefixes =
   let fn = toFileName dir
   in (\case
         SimpleImport {..} ->
           (ModuleCtx
-             (fromMaybe modName ((: []) <$> qualified))
+             (fromMaybe modName ((:| []) <$> qualified))
              []
              ns
              loc
@@ -92,7 +97,7 @@ parseImport dir ns prefixes =
              (fn modName))
         SpecificImport {..} ->
           (ModuleCtx
-             (fromMaybe modName ((: []) <$> qualified))
+             (fromMaybe modName ((:| []) <$> qualified))
              entities
              ns
              loc
@@ -100,17 +105,17 @@ parseImport dir ns prefixes =
              (fn modName)))
 
 -- FIXME: avoid this code duplication of the function above
-importName :: Import -> [[Ident]]
-importName SimpleImport {..}   = [fromMaybe modName ((: []) <$> qualified)]
+importName :: Import -> [Ref]
+importName SimpleImport {..}   = [fromMaybe modName ((:| []) <$> qualified)]
 importName SpecificImport {..} =
-  let ents = map (: []) entities
-  in fromMaybe ents ((\q -> map (q :) ents) <$> qualified)
+  let ents = map (:| []) entities
+  in fromMaybe ents ((\q -> map (q <|) ents) <$> qualified)
 
 -- | Returns all defined idents and base hierarchical accesses defined in a
 -- module.
-dfNames :: DesignFile -> [[Ident]]
+dfNames :: DesignFile -> [Ref]
 dfNames f =
-  map (: []) (universeBi f :: [Ident]) ++ map refOf (universeBi f :: [Name])
+  map refOf (universeBi f :: [Ident]) ++ map refOf (universeBi f :: [Name])
 
 -- | Returns the names of all declarations in the program
 declNames :: DesignFile -> [[Ident]]
@@ -127,11 +132,11 @@ declNames f =
 
 -- | Prefix matching based union operation matching items on from list into into
 -- list. Returns names without matching prefix
-prefixUnion :: [[Ident]] -> [[Ident]] -> [[Ident]]
+prefixUnion :: [Ref] -> [Ref] -> [[Ident]]
 prefixUnion from into
   -- trace
   --   ("initial from " ++ ppShow from ++ " show into " ++ ppShow into)
- = concatMap (matchPrefix into) from
+ = concatMap (matchPrefix (map N.toList into) . N.toList) from
   where
     matchPrefix :: [[Ident]] -> [Ident] -> [[Ident]]
     matchPrefix withs match =
@@ -163,10 +168,8 @@ filterModule required df@DesignFile {..} = DesignFile (map go units) loc
     -- will work.
     required' =
       required ++
-      (concatMap safeHead (concatMap processDeps procs) `intersect` topLevelDefs df) ++
-      (concatMap safeHead (concatMap networkDeps nets) `intersect` topLevelDefs df)
-    safeHead []    = []
-    safeHead (x:_) = [x]
+      (map N.head (concatMap processDeps procs) `intersect` topLevelDefs df) ++
+      (map N.head (concatMap networkDeps nets) `intersect` topLevelDefs df)
 
     go DesignUnit {unitElement = unitElement, loc = duloc} =
       if null required
@@ -182,19 +185,19 @@ topLevelDefs df =
   map nameOf (universeBi df :: [Network])
 
 -- | Scans the body of a module and looks up dependencies
-processDeps :: Process -> [[Ident]]
+processDeps :: Process -> [Ref]
 processDeps Process {..} = map refOf (universeBi body :: [Name])
 
 -- | Scans the body of a module and looks up dependencies
-networkDeps :: Network -> [[Ident]]
+networkDeps :: Network -> [Ref]
 networkDeps Network {..} = map refOf (universeBi netDecls :: [Name])
 
-addNameMap :: (MonadIO m, MonadThrow m) => Ident -> [Ident] -> PaM m ()
+addNameMap :: (MonadIO m, MonadThrow m) => Ident -> Ref -> PaM m ()
 addNameMap n1 n2 = do
   s <- get
-  when ([n1] /= n2) $ put $ s {nameMap = B.insert n1 n2 (nameMap s)}
+  when (refOf n1 /= n2) $ put $ s {nameMap = B.insert n1 n2 (nameMap s)}
 
-lookupName :: (MonadIO m, MonadThrow m) => [Ident] -> PaM m (Maybe Ident)
+lookupName :: (MonadIO m, MonadThrow m) => Ref -> PaM m (Maybe Ident)
 lookupName name --trace (show name)
  = do
   s <- gets nameMap
@@ -205,18 +208,18 @@ lookupName name --trace (show name)
 -- list in the map. Returns maybe a tuple containing the length of matched name
 -- chain and the result of the lookup
 lookupPrefix ::
-     (MonadIO m, MonadThrow m) => [Ident] -> PaM m (Maybe (Int, Ident))
-lookupPrefix = go . reverse
+     (MonadIO m, MonadThrow m) => Ref -> PaM m (Maybe (Int, Ident))
+lookupPrefix = go . reverse . N.toList
   where
     go [] = return Nothing
     go (x:xs) =
-      lookupName (reverse (x : xs)) >>= \case
+      lookupName (N.reverse (x :| xs)) >>= \case
         Just r -> return $ Just (length xs + 1, r)
         Nothing -> go xs
 
 -- | Transform top-level names and add maps, tracking the transformed names in a map
 renameModule ::
-     (MonadThrow m, MonadIO m) => [Ident] -> Bool -> DesignFile -> PaM m DesignFile
+     (MonadThrow m, MonadIO m) => Ref -> Bool -> DesignFile -> PaM m DesignFile
 renameModule n asSpecific f =
   transformBiM renameProc f >>= transformBiM renameNet
   -- Pre populate map with possible module names
@@ -235,16 +238,16 @@ renameModule n asSpecific f =
         -- namespace
         -- TODO: Avoid the _ prefix by explicitly checking for name clashes
       in Ident
-           ((if null n'
+           ((if T.null n'
               then ""
-              else "_" ++ n' ++ "_") ++ val)
+              else "_" <> n' <> "_") <> val)
            loc
     addMaps name =
       addNameMap
         (newName name)
         (if asSpecific
-           then [name]
-           else n ++ [name])
+           then refOf name
+           else n <> refOf name)
 
 -- | Rename all references to renamed modules accordingly
 renameRefs :: (MonadThrow m, MonadIO m) => DesignFile -> PaM m DesignFile
@@ -255,10 +258,7 @@ renameRefs = transformBiM go
       in lookupPrefix b >>= \case
            Just (n, ha) ->
              return $
-             Name
-               (IdentName ha (SrcLoc $ locOf ha))
-               (drop n (base : parts))
-               loc
+             Name (IdentName ha (SrcLoc $ locOf ha)) (drop n (base : parts)) loc
            Nothing -> return o
 
 -- DONE: When we have unqualified specific imports of names, we need to make
@@ -291,6 +291,9 @@ parseModule ModuleCtx {..} = do
   -- liftIO $ putStrLn ("ents " ++ ppShow ents')
   let topNames = topLevelDefs res
   areNamesDefined ents' topNames
+  -- FIXME: This currently checks against ALL names in the program. It's maybe a
+  -- bit too general since it is probably ok for process variables to shadow
+  -- global names
   areNamesUnique decNames importPrefixes
   -- Forward pass: List of defined names. Should include accumulated entries
   let filtered = filterModule ents' res
@@ -307,9 +310,10 @@ parseModule ModuleCtx {..} = do
       let diff = lns \\ names
       unless (null diff) $
         throw $ UndefinedIdentifierError (map nameOf diff) stmLocation
-    areNamesUnique reqNames defs =
+    areNamesUnique reqNames defs
       -- TODO: Location in error message
-      let a = reqNames `intersect` defs
+     =
+      let a = reqNames `intersect` map N.toList defs
       in unless (null a) $
          throw $ IdentifierClashError (map nameOf (getFirstNames a)) stmLocation
 

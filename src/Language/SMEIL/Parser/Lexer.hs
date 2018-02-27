@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Language.SMEIL.Parser.Lexer
   ( lexeme
   , symbol
@@ -20,6 +22,8 @@ module Language.SMEIL.Parser.Lexer
 
 import           Control.Applicative         (empty)
 import           Control.Monad               (when)
+import           Data.Monoid                 ((<>))
+import qualified Data.Text                   as T
 import           Text.Megaparsec
 import           Text.Megaparsec.Char
 import qualified Text.Megaparsec.Char.Lexer  as L
@@ -33,7 +37,7 @@ spaceConsumer = L.space space1 (L.skipLineComment "//") empty
 lexeme :: Parser a -> Parser a
 lexeme = L.lexeme spaceConsumer
 
-symbol :: String -> Parser String
+symbol :: T.Text -> Parser T.Text
 symbol = L.symbol spaceConsumer
 
 parens, braces, brackets :: Parser a -> Parser a
@@ -41,27 +45,27 @@ parens    = between (symbol "(") (symbol ")")
 braces    = between (symbol "{") (symbol "}")
 brackets  = between (symbol "[") (symbol "]")
 
-semi, comma, colon, dot, equal :: Parser String
+semi, comma, colon, dot, equal :: Parser T.Text
 semi  = symbol ";"
 comma = symbol ","
 colon = symbol ":"
 dot   = symbol "."
 equal   = symbol "="
 
-reserved :: String -> Parser String
+reserved :: T.Text -> Parser T.Text
 reserved w = do
   r <- lexeme (string w)
-  when (r `notElem` reservedWords) $ fail (r ++ " is not a reserved word")
+  when (r `notElem` reservedWords) $ fail (T.unpack r <> " is not a reserved word")
   return r
 
 ident :: Parser S.Ident
 ident = lexeme $ withPos $ do
     i <- part <|> string "_" <* notFollowedBy part
     when (i `elem` reservedWords) $
-      fail $ "Keyword " ++ i ++ " used as identifier"
+      fail $ "Keyword " ++ T.unpack i ++ " used as identifier"
     return (S.Ident i)
   where
-    part = (:) <$> letterChar <*> many (alphaNumChar <|> char '_')
+    part = T.pack <$> ((:) <$> letterChar <*> many (alphaNumChar <|> char '_'))
 
 integer :: Parser Integer
 integer = lexeme $ L.signed spaceConsumer (hex <|> oct <|> dec)
@@ -73,9 +77,9 @@ integer = lexeme $ L.signed spaceConsumer (hex <|> oct <|> dec)
 float :: Parser Double
 float = lexeme $ L.signed spaceConsumer L.float
 
-stringLit :: Parser String
+stringLit :: Parser T.Text
 stringLit =
-  lexeme
+  T.pack <$> lexeme
     (between (char '"') (char '"' <?> "end of string") (many strChar))
   where
     strChar = satisfy (\c -> (c /= '"') && (c /= '\\') && (c > '\026'))
@@ -99,7 +103,7 @@ direction =
     , reserved "const" >> pure S.Const
     ]
 
-reservedWords :: [String]
+reservedWords :: [T.Text]
 reservedWords =
   [ "as"
   , "async"

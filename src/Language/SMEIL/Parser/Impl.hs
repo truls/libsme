@@ -1,8 +1,12 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Language.SMEIL.Parser.Impl where
 
 import           Control.Monad               (void)
+import           Data.List.NonEmpty          (NonEmpty ((:|)))
 import           Data.Loc
-import           Data.Maybe                  (isJust)
+import           Data.Maybe                  (fromMaybe, isJust)
+import qualified Data.Text                   as T
 
 import           Text.Megaparsec
 import           Text.Megaparsec.Char
@@ -38,7 +42,10 @@ importStm =
          semi
        ])
   where
-    modName = ident `sepBy1` dot
+    modName = do
+      first <- ident
+      rest <- optional $ dot *> ident `sepBy` dot
+      return (first :| fromMaybe [] rest)
     qualified = optional (reserved "as" *> ident)
 
 network :: Parser S.Network
@@ -91,7 +98,7 @@ instanceDecl =
 enum :: Parser S.Enumeration
 enum = withPos $
   reserved "enum" >>
-  S.Enumeration <$> ident <*> braces (enumField `sepBy1` comma) <* semi
+  S.Enumeration S.Untyped <$> ident <*> braces (enumField `sepBy1` comma) <* semi
   where
     enumField = (,) <$> ident <*> optional (symbol "=" *> expression)
 
@@ -206,7 +213,10 @@ statement =
     returnStm = reserved "return" >> S.Return <$> optional expression <* semi
 
 name :: Parser S.Name
-name = withPos $ S.Name <$> namePart <*> (optional dot >> namePart `sepBy` dot)
+name = withPos $ do
+  part1 <- namePart
+  rest <- optional (dot >> namePart `sepBy` dot)
+  return $ S.Name part1 (fromMaybe [] rest)
 
 namePart :: Parser S.NamePart
 namePart = do
@@ -228,48 +238,48 @@ term :: Parser S.Expr
 term =
   choice
     [ parens expression
-    , withPos $ S.PrimLit <$> (literal <|> withPos arrayLit)
+    , withPos $ S.PrimLit S.Untyped <$> (literal <|> withPos arrayLit)
     , try (withPos funCall)
-    , withPos $ S.PrimName <$> name
+    , withPos $ S.PrimName S.Untyped <$> name
     ] <?>
   "term"
   where
-    funCall = S.FunCall <$> name <*> parens (expression `sepBy1` comma)
+    funCall = S.FunCall S.Untyped <$> name <*> parens (expression `sepBy1` comma)
     arrayLit = S.LitArray <$> brackets (integer `sepBy` comma)
     -- TODO: Temporary limitation
     --arrayLit = S.LitArray <$> brackets (expression `sepBy` comma)
 
 table :: [[Operator Parser S.Expr]]
 table =
-  [ [ prefix "+" S.Unary S.UnPlus
-    , prefix "-" S.Unary S.UnMinus
-    , prefix "!" S.Unary S.NotOp
-    ]
-  , [ binary "*" S.Binary S.MulOp
-    , binary "/" S.Binary S.DivOp
-    , binary "%" S.Binary S.ModOp
-    ]
-  , [binary "+" S.Binary S.PlusOp, binary "-" S.Binary S.MinusOp]
-  , [binary "<<" S.Binary S.SllOp, binary ">>" S.Binary S.SrlOp]
-  , [ binary "<" S.Binary S.LtOp
-    , binary ">" S.Binary S.GtOp
-    , binary "<=" S.Binary S.GeqOp
-    , binary ">=" S.Binary S.LeqOp
-    , binary "==" S.Binary S.EqOp
-    ]
-  , [binary "&" S.Binary S.AndOp]
-  , [binary "^" S.Binary S.XorOp]
-  , [binary "|" S.Binary S.OrOp]
-  ]
+  let unary = S.Unary S.Untyped
+      bin = S.Binary S.Untyped
+  in [ [ prefix "+" unary S.UnPlus
+       , prefix "-" unary S.UnMinus
+       , prefix "!" unary S.NotOp
+       ]
+     , [binary "*" bin S.MulOp, binary "/" bin S.DivOp, binary "%" bin S.ModOp]
+     , [binary "+" bin S.PlusOp, binary "-" bin S.MinusOp]
+     , [binary "<<" bin S.SllOp, binary ">>" bin S.SrlOp]
+     , [ binary ">=" bin S.GeqOp
+       , binary "<=" bin S.LeqOp
+       , binary "<" bin S.LtOp
+       , binary ">" bin S.GtOp
+       , binary "==" bin S.EqOp
+       , binary "!=" bin S.EqOp
+       ]
+     , [binary "&" bin S.AndOp]
+     , [binary "^" bin S.XorOp]
+     , [binary "|" bin S.OrOp]
+     ]
 
-posSymbol :: String -> (SrcLoc -> a) -> Parser (a, SrcLoc)
+posSymbol :: T.Text -> (SrcLoc -> a) -> Parser (a, SrcLoc)
 posSymbol s f = do
   putPos
   _ <- symbol s
   pos <- makePos'
   return (f pos, pos)
 
-binary :: String
+binary :: T.Text
        -> (a -> b -> b -> SrcLoc -> b)
        -> (SrcLoc -> a)
        -> Operator Parser b
@@ -278,7 +288,7 @@ binary n f g =
     (do (g', pos) <- posSymbol n g
         return (\s r -> f g' s r pos))
 
-prefix :: String
+prefix :: T.Text
        -> (a -> b -> SrcLoc -> b)
        -> (SrcLoc -> a)
        -> Operator Parser b
@@ -295,7 +305,7 @@ typeName =
        , char 'u' >> S.Unsigned <$> integer
        , char 'f' >>
          ((string "32" >> pure S.Single) <|> (string "64" >> pure S.Double))
-       , string "bool" >> pure S.Bool
+       , symbol "bool" >> pure S.Bool
        , S.Array <$> brackets (optional expression) <*> typeName
        ])
 

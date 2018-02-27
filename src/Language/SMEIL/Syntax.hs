@@ -1,9 +1,13 @@
+{-# LANGUAGE UndecidableInstances  #-}
 -- | This module defines the syntax for the SME intermediate
 -- representation. For details, see: TODO/langspec.pdf
 
 {-# LANGUAGE DeriveDataTypeable    #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE RecordWildCards       #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
 
 module Language.SMEIL.Syntax
   ( DesignFile(..)
@@ -40,26 +44,47 @@ module Language.SMEIL.Syntax
   , Typeness(..)
   , Typed(..)
   , References(..)
+  , Ref
+  , bitSize
   ) where
 
-import           Data.Data      (Data, Typeable)
-import           Data.List      (intercalate)
+import           Data.Data                       (Data, Typeable)
+import           Data.Hashable
+import qualified Data.List.NonEmpty              as N
 import           Data.Loc
+import           Data.Maybe                      (fromMaybe)
 import           Data.Semigroup
+import qualified Data.Text                       as T
+import           Text.PrettyPrint.Mainland       hiding ((<>))
+import           Text.PrettyPrint.Mainland.Class
+
+--import           Debug.Trace                     (trace)
+trace :: String -> b -> b
+trace _ = id
 
 class ToString a where
   toString :: a -> String
+  toText :: a -> T.Text
 
 class Nameable a where
   nameOf :: a -> Ident
 
+type Ref = N.NonEmpty Ident
+
+instance Pretty Ref where
+  ppr r = cat $ punctuate dot (map (\(Ident i _) -> ppr i) (N.toList r))
+
 class References a where
-  refOf :: a -> [Ident]
+  refOf :: a -> Ref
 
 data Typeness
   = Typed Type
   | Untyped
   deriving (Ord, Eq, Show, Data, Typeable)
+
+instance Located Typeness where
+  locOf (Typed t) = locOf t
+  locOf Untyped   = noLoc
 
 class Typed a where
   typeOf :: a -> Typeness
@@ -91,10 +116,10 @@ data UnitElement
 
 -- | Specifies loc module to be imported in current design module
 data Import
-  = SimpleImport { modName   :: [Ident] -- ^ Name of the module to be imported
+  = SimpleImport { modName   :: Ref -- ^ Name of the module to be imported
                 ,  qualified :: Maybe Ident -- ^ Optional qualified name of import
                 ,  loc       :: SrcLoc}
-  | SpecificImport { modName   :: [Ident] -- ^ Name of module to be imported
+  | SpecificImport { modName   :: Ref -- ^ Name of module to be imported
                   ,  entities  :: [Ident] -- ^ Entities from module to be imported
                   ,  qualified :: Maybe Ident -- ^ Optional qualified name of import
                   ,  loc       :: SrcLoc}
@@ -115,6 +140,10 @@ data Instance = Instance
 
 instance Located Instance where
   locOf Instance {..} = locOf loc
+
+instance Nameable Instance where
+  nameOf Instance {..} =
+    fromMaybe (Ident "" noLoc) instName -- TODO: What to do here
 
 -- | Describes loc parameter used in the specification of "Process" or "Network"
 data Param = Param
@@ -142,14 +171,18 @@ instance Nameable Network where
   nameOf Network {..} = name
 
 data NetworkDecl
-  = NetInst { inst :: Instance -- ^ loc network instance
-            }
-  | NetBus { bus :: Bus -- ^ loc network declaration
-           }
-  | NetConst { const :: Constant -- ^ loc network constant
+  = NetInst { inst :: Instance
+              -- ^ loc network instance
              }
-  | NetGen { gen :: Generate -- ^ Generator statement
-           }
+  | NetBus { bus :: Bus
+           -- ^ loc network declaration
+            }
+  | NetConst { const :: Constant
+             -- ^ loc network constant
+              }
+  | NetGen { gen :: Generate
+           -- ^ Generator statement
+            }
   deriving (Eq, Ord, Show, Data, Typeable)
 
 data Bus = Bus
@@ -162,6 +195,9 @@ data Bus = Bus
 
 instance Located Bus where
   locOf Bus {..} = locOf loc
+
+instance Nameable Bus where
+  nameOf Bus {..} = name
 
 data BusSignal = BusSignal
   { name  :: Ident -- ^Name of signal
@@ -237,6 +273,9 @@ instance Typed Variable where
 instance Located Variable where
   locOf Variable {..} = locOf loc
 
+instance Nameable Variable where
+  nameOf Variable {..} = name
+
 data Constant = Constant
   { name :: Ident
   , ty   :: Typeness
@@ -249,6 +288,9 @@ instance Typed Constant where
 
 instance Located Constant where
   locOf Constant {..} = locOf loc
+
+instance Nameable Constant where
+  nameOf Constant {..} = name
 
 data Function = Function
   { name   :: Ident
@@ -264,6 +306,9 @@ instance Typed Function where
 
 instance Located Function where
   locOf Function {..} = locOf loc
+
+instance Nameable Function where
+  nameOf Function {..} = name
 
 data Statement
   = Assign { dest :: Name
@@ -299,13 +344,20 @@ instance Located Statement where
   locOf Return {..}  = locOf loc
 
 data Enumeration = Enumeration
-  { name   :: Ident
+  { ty     :: Typeness
+  , name   :: Ident
   , fields :: [(Ident, Maybe Expr)]
   , loc    :: SrcLoc
   } deriving (Eq, Ord, Show, Data, Typeable)
 
+instance Typed Enumeration where
+  typeOf Enumeration {..} = ty
+
 instance Located Enumeration where
   locOf Enumeration {..} = locOf loc
+
+instance Nameable Enumeration where
+  nameOf Enumeration {..} = name
 
 data Direction
   = In { loc :: SrcLoc }
@@ -319,21 +371,33 @@ instance Located Direction where
   locOf Const {..} = locOf loc
 
 data Expr
-  = Binary { binOp :: BinOp
+  = Binary { ty    :: Typeness
+           , binOp :: BinOp
            , left  :: Expr
            , right :: Expr
            , loc   :: SrcLoc }
-  | Unary { unOp :: UnOp
+  | Unary { ty   :: Typeness
+          , unOp :: UnOp
           , expr :: Expr
           , loc  :: SrcLoc }
-  | PrimLit { lit :: Literal
+  | PrimLit { ty  :: Typeness
+            , lit :: Literal
             , loc :: SrcLoc }
-  | PrimName { name :: Name
+  | PrimName { ty   :: Typeness
+             , name :: Name
              , loc  :: SrcLoc }
-  | FunCall { name   :: Name
+  | FunCall { ty     :: Typeness
+            , name   :: Name
             , params :: [Expr]
             , loc    :: SrcLoc }
   deriving (Eq, Ord, Show, Data, Typeable)
+
+instance {-# OVERLAPPING #-} Typed Expr where
+  typeOf Binary {..}   = ty
+  typeOf Unary {..}    = ty
+  typeOf PrimLit {..}  = ty
+  typeOf PrimName {..} = ty
+  typeOf FunCall {..}  = ty
 
 instance Located Expr where
   locOf Binary {..}   = locOf loc
@@ -398,7 +462,7 @@ data Name
     deriving (Eq, Ord, Show, Data, Typeable)
 
 instance References Name where
-  refOf Name {..} = concatMap refOf (base : parts)
+  refOf Name {..} = foldl (<>) (refOf base) (map refOf parts)
 
 instance Located Name where
   locOf Name {..}   = locOf loc
@@ -412,7 +476,7 @@ data NamePart
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance References NamePart where
-  refOf IdentName {..}   = [ident]
+  refOf IdentName {..}   = ident N.:| []
   refOf ArrayAccess {..} = refOf namePart
 
 instance Located NamePart where
@@ -432,10 +496,14 @@ data Type
   | Single { loc :: SrcLoc }
   | Double { loc :: SrcLoc }
   | Bool { loc :: SrcLoc }
+  | String { loc :: SrcLoc }
   | Array { arrLength :: Maybe Expr
           , innerTy   :: Type
           , loc       :: SrcLoc }
   deriving (Eq, Ord, Show, Data, Typeable)
+
+-- instance Ord Type where
+--   compare
 
 instance Located Type where
   locOf Signed {..}   = locOf loc
@@ -443,6 +511,7 @@ instance Located Type where
   locOf Single {..}   = locOf loc
   locOf Double {..}   = locOf loc
   locOf Bool {..}     = locOf loc
+  locOf String {..}   = locOf loc
   locOf Array {..}    = locOf loc
 
 data Literal
@@ -450,7 +519,7 @@ data Literal
            , loc    :: SrcLoc }
   | LitFloat { floatVal :: Double
              , loc      :: SrcLoc }
-  | LitString { stringVal :: String
+  | LitString { stringVal :: T.Text
               , loc       :: SrcLoc }
   | LitArray { arrayVal :: [Integer]
              , loc      :: SrcLoc }
@@ -470,44 +539,70 @@ instance Located Literal where
   locOf LitFalse {..}  = locOf loc
 
 -- | Returns the minimum number of bits required to represent a number
-bitSize :: (Integral a) => a -> Integer
-bitSize = (+ 1) . (floor :: Double -> Integer) . logBase 2 . fromIntegral . abs
+bitSize :: forall a. (Integral a) => a -> a
+bitSize = (+ 1) . (floor :: Double -> a) . logBase 2 . fromIntegral . abs
 
 instance Typed Literal where
   typeOf LitInt {..}
-    | intVal < 0 = Typed $ Signed (bitSize intVal) noLoc
-    | otherwise = Typed $ Unsigned (bitSize intVal) noLoc
-  typeOf LitFloat {..} = Typed $ Single noLoc
-  typeOf LitString {..} = Untyped
+    | intVal < 0 = let res = Typed $ Signed (bitSize intVal) loc in
+                     trace ("Typeof for " ++ show intVal ++ " yielded " ++ show res) res
+    | otherwise = let res = Typed $ Unsigned (bitSize intVal) loc in
+                    trace ("Typeof for " ++ show intVal ++ " yielded " ++ show res) res
+  typeOf LitFloat {..} = Typed $ Single loc
+  typeOf LitString {..} = Typed $ String loc
   -- TODO: Do better! This requires a pre-processing step simplifying the
   -- expression comprising the array literal
   typeOf LitArray {..} =
     Typed $
     Array
-      (Just (PrimLit (LitInt (fromIntegral $ length arrayVal) noLoc) noLoc))
+      (Just (PrimLit Untyped (LitInt (fromIntegral $ length arrayVal) noLoc) noLoc))
       arrTy
-      noLoc
+      loc
     where
       arrTy
         | minimum arrayVal < 0 =
-          Signed (bitSize $ maximum (map abs arrayVal)) noLoc
-        | otherwise = Unsigned (bitSize $ maximum arrayVal) noLoc
-  typeOf LitTrue {..} = Typed $ Bool noLoc
-  typeOf LitFalse {..} = Typed $ Bool noLoc
+          Signed (bitSize $ maximum (map abs arrayVal)) loc
+        | otherwise = Unsigned (bitSize $ maximum arrayVal) loc
+  typeOf LitTrue {..} = Typed $ Bool loc
+  typeOf LitFalse {..} = Typed $ Bool loc
 
 data Ident = Ident
-  { val :: String
+  { val :: T.Text
   , loc :: SrcLoc
-  } deriving (Ord, Show, Data, Typeable)
+  } deriving (Show, Data, Typeable)
 
 instance Eq Ident where
+  -- Disregard locations when comparing identities
+  -- TODO: Maybe an Eq instance for Ident is better?
   Ident { val = val1 } == Ident { val = val2 } = val1 == val2
 
+instance Ord Ident where
+  Ident {val = val1 } `compare` Ident {val = val2} = val1 `compare` val2
+
 instance References Ident where
-  refOf i = [i]
+  refOf i = i N.:| []
 
 instance Located Ident where
   locOf Ident {..} = locOf loc
 
 instance ToString Ident where
-  toString (Ident v _) = v
+  toString (Ident v _) = T.unpack v
+  toText (Ident v _)  = v
+
+instance Hashable Ident where
+  hashWithSalt s Ident {..} = hashWithSalt s val
+
+instance Nameable Ident where
+  nameOf = id
+
+-- Instances for standard number types
+instance {-# OVERLAPPABLE #-} (Integral a) => Typed a where
+  typeOf intVal
+    | intVal < 0 = Typed $ Signed (fromIntegral $ bitSize intVal) noLoc
+    | otherwise = Typed $ Unsigned (fromIntegral $ bitSize intVal) noLoc
+
+instance Typed Double where
+  typeOf _ = Typed $ Double noLoc
+
+instance Typed Float where
+  typeOf _ = Typed $ Double noLoc

@@ -2,21 +2,20 @@
 
 module Main where
 
-import           Control.Exception          (throwIO)
-import           Control.Monad              (unless)
-import           Data.ByteString.Lazy       as B (getContents, readFile)
-import           Data.ByteString.Lazy.Char8 as C8 (pack, putStrLn, unpack,
-                                                   writeFile)
-import           Data.Char                  (isLetter, toLower)
-import           Data.Semigroup             ((<>))
-import           Options.Applicative        hiding (value)
-import qualified Options.Applicative        as O (value)
-import           System.Directory           (doesFileExist)
-import           Text.Show.Pretty           (ppShow)
+import           Control.Exception     (throwIO)
+import           Control.Monad         (unless)
+import           Data.Char             (isLetter, toLower)
+import           Data.Semigroup        ((<>))
+import qualified Data.Text             as T
+import qualified Data.Text.IO          as TIO
+import           Options.Applicative   hiding (value)
+import qualified Options.Applicative   as O (value)
+import           System.Directory      (doesFileExist)
+import           Text.Show.Pretty      (ppShow)
 
 -- import           Language.SMEIL.JSON
-import           Language.SMEIL.Parser      (parse)
-import           Language.SMEIL.Pretty      (pprr)
+import           Language.SMEIL.Parser (parse)
+import           Language.SMEIL.Pretty (pprr)
 -- import           Language.SMEIL.Syntax
 
 data Format
@@ -97,24 +96,24 @@ main = do
   let ouf = outputFile o
   fc <-
     case inf of
-      "-" -> B.getContents
+      "-" -> TIO.getContents
       _ -> do
         doesFileExist inf >>=
           flip unless (throwIO (userError $ "Input file not found " ++ inf))
-        B.readFile inf
+        TIO.readFile inf
   ast <-
     case inputFormat o of
       PrettyJSON -> undefined -- raiseEither (readJSON fc :: Either String (DesignFile SrcSpan))
       JSON       -> undefined -- raiseEither (readJSON fc :: Either String (DesignFile SrcSpan))
-      Pretty     -> raiseEither $ parse (prettyStdin inf) (unpack fc)
+      Pretty     -> raiseEither $ parse (prettyStdin inf) fc
       AST        -> throwIO (userError
                              "Pretty printed AST cannot be used as source format")
   let out =
         case outputFormat o of
           PrettyJSON -> undefined -- genJSONPretty ast
           JSON       -> undefined -- genJSON ast
-          Pretty     -> C8.pack $ pprr ast
-          AST        -> C8.pack $ ppShow ast
+          Pretty     -> pprr ast
+          AST        -> T.pack $ ppShow ast
   if ouf == "-"
-    then C8.putStrLn out
-    else C8.writeFile ouf out
+    then TIO.putStrLn out
+    else TIO.writeFile ouf out

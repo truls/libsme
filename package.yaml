@@ -22,26 +22,31 @@ ghc-options:
   - -Wall
 
 dependencies:
-- base >= 4.7 && < 5
-- language-vhdl-quote
-# - language-smeil
-- containers >= 0.5.10.2
-- unordered-containers >= 0.2.8.0
-- filepath >= 1.4.1.2
-- directory >= 1.3.0.2
-- mtl
-- uniplate >= 1.6.12
-- pretty-show
-- mainland-pretty >= 0.6.1
-- aeson >= 1.2.3.0
-- bytestring >= 0.10.8.1
-- split >= 0.2.3.2
-- megaparsec >= 6.3.0
-- aeson-pretty >= 0.8.5
-- bimap >= 0.3.3
-- srcloc >= 0.5.1.1
-- exceptions >= 0.8.3
-- lens >= 4.15.4
+  - base >= 4.7 && < 5
+  - language-vhdl-quote
+  # - language-smeil
+  - containers >= 0.5.10.2
+  - unordered-containers >= 0.2.8.0
+  - filepath >= 1.4.1.2
+  - directory >= 1.3.0.2
+  - mtl >= 2.2.1
+  - uniplate >= 1.6.12
+  - pretty-show >= 1.6.13
+  - mainland-pretty >= 0.6.1
+  - aeson >= 1.2.3.0
+  - bytestring >= 0.10.8.1
+  - split >= 0.2.3.2
+  - megaparsec >= 6.3.0
+  - aeson-pretty >= 0.8.5
+  - bimap >= 0.3.3
+  - srcloc >= 0.5.1.1
+  - exceptions >= 0.8.3
+  - lens >= 4.15.4
+  - hashable >= 1.2.6.1
+  - extra >= 1.6.3
+  - text >= 1.2.2.2
+  - mono-traversable
+  #- recursion-schemes
 
 library:
   source-dirs: src
@@ -53,33 +58,33 @@ executables:
     main:                smec.hs
     source-dirs:         app
     ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
     # - -Wall
     dependencies:
-    - libsme
-    - optparse-applicative
+      - libsme
+      - optparse-applicative
 
   smeast:
     main:                smeast.hs
     source-dirs:         app
     ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
     # - -Wall
     dependencies:
-    - libsme
-    - optparse-applicative
+      - libsme
+      - optparse-applicative
 
 tests:
   libsme-test:
     main:                Spec.hs
     source-dirs:         test
     ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
     dependencies:
-    - libsme
+      - libsme

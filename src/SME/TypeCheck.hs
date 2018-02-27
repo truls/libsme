@@ -2,6 +2,8 @@
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
 {-# LANGUAGE TupleSections              #-}
 
@@ -11,28 +13,29 @@ module SME.TypeCheck
   ) where
 
 import           Control.Arrow               (first)
-import           Control.Exception           (Exception, SomeException, throw)
+import           Control.Exception           (throw)
 import           Control.Monad               (foldM, forM, forM_, unless,
                                               zipWithM)
-import           Control.Monad.Except        (ExceptT, MonadError, catchError,
-                                              runExceptT)
-import           Control.Monad.Identity      (Identity, runIdentity)
-import           Control.Monad.IO.Class      (MonadIO, liftIO)
-import           Control.Monad.State         (MonadState, StateT, gets, modify,
-                                              runState, runStateT)
+import           Control.Monad.Except        (MonadError)
+
+import           Control.Monad.Identity      (Identity)
+import           Control.Monad.IO.Class      (liftIO)
+import           Control.Monad.State         (MonadState)
 import           Control.Monad.Writer        (MonadWriter, WriterT, runWriterT)
 import           Data.Generics.Uniplate.Data (universeBi)
-import           Data.Hashable               (hash)
 import qualified Data.HashMap.Strict         as M
 import           Data.List                   (sortOn)
+import qualified Data.List.NonEmpty          as N
 import           Data.Loc                    (Loc, Located (..), SrcLoc (..),
                                               noLoc)
 import           Data.Maybe                  (fromMaybe, isNothing)
-import qualified Data.Set                    as S
+import           Data.Monoid                 ((<>))
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
 import           SME.Error
+import           SME.Representation
+
 
 import           Text.Show.Pretty            (ppShow)
 
@@ -41,6 +44,10 @@ trace :: String -> a -> a
 trace _ = id
 
 -- * Type checking monad and data structures for holding type checking state
+
+type Env = BaseEnv Void
+type DefType = BaseDefType Void
+type TopDef = BaseTopDef Void
 
 data TyLog =
   Inf Info
@@ -59,242 +66,26 @@ type Log = [TyLog]
 
 -- | Main typechecking monad
 newtype TyM a = TyM
-  { unTyM :: ExceptT TypeCheckErrors (WriterT Log (StateT Env Identity)) a
+  { unTyM :: WriterT Log (ReprM Identity Void) a
   } deriving ( Functor
              , Applicative
              , Monad
-             , MonadError TypeCheckErrors
-             , MonadState Env
              , MonadWriter Log
+             , MonadState Env
+             , MonadError TypeCheckErrors
              )
 
--- | Type checking monad
-class ( Monad m
-      -- , MonadState Env m
-      -- , MonadWriter Log m
-      -- , MonadError TypeCheckErrors m
-      ) =>
-      MonadTypeCheck m where
-  lookupDef' :: (References a) => a -> m ([Ident], DefType)
-  lookupDef :: (References a) => a -> m DefType
-  lookupTopDef :: (References a) => a -> m TopDef
-  updateTopDef :: (References a) => a -> (TopDef -> TopDef) -> m ()
-  mapDefs :: (References a) => a -> (DefType -> m DefType) -> m ()
-  forUsedTopDefs :: (TopDef -> m ()) -> m ()
-  --withScope :: (ToString a, Located a) => a -> m b -> m b
-  withScope :: (References a) => a -> m b -> m b
-  addDefinition :: (References a, Located b, ToString b) => a -> b -> DefType -> m ()
-  addTopDef :: TopDef -> m ()
-  addUsedEnt :: (Nameable a) => a -> m ()
+instance (MonadRepr Void) TyM
 
-  --lookupInstance :: String -> m [DefType]
-  --lookupInstances :: m [DefType]
-
-lookupOrFail ::
-     (ToString a, Pretty a, Located a, MonadTypeCheck m)
-  => a
-  -> M.HashMap String b
-  -> m b
-lookupOrFail e m = case M.lookup (toString e) m of
-  Just r  -> pure r
-  Nothing -> throw $ UndefinedName e
-
-instance MonadTypeCheck TyM where
-  lookupDef r = do
-    (_, res) <- lookupDef' r
-    return res
-  lookupDef' r = go (trace ("Lookup called with " ++ show (refOf r)) (refOf r))
-      -- Three cases.
-      -- Case one: Single name [Ident] is found in local scope. Return that
-      -- Case two: First name [Ident, ..] refers to a bus in local scope. Return
-      -- that.
-      -- Case three: Name [Ident, ...] refers to a top-level name. Switch
-      -- scope, remaining name compounds should fall into previous cases
-    where
-      go [] = throw $ InternalCompilerError "Empty reference."
-      go [i] = do
-        d <- gets curEnv
-        res <- lookupOrFail i (symTable d)
-        return ([], res)
-      go (i:is) = do
-        d <- gets curEnv
-        lookupOrFail i (symTable d) >>= \case
-          b@BusDef {} -> pure (is, b)
-          InstDef {instantiated = instantiated} ->
-            withScope instantiated (go is)
-          ParamDef {paramType = BusPar {..}} ->
-            case ref of
-              (r':rs') -> withScope r' (go (rs' ++ is))
-              _ ->
-                throw $ InternalCompilerError "Bus reference is a single name"
-          _ ->
-            error
-              ("TODO: Proper error, Name is not of an indexable type " ++ show i) `catchError`
-            (\_ -> withScope i (go is))
-  lookupTopDef i =
-    go $ trace ("lookupTopDef called with " ++ show (refOf i)) (refOf i)
-    where
-      go [ident] = do
-        ds <- gets defs
-        lookupOrFail ident ds >>= \case
-          EmptyTable ->
-            throw $ InternalCompilerError "Lookup returned empty table"
-          e -> pure e
-      go _ =
-        throw $
-        InternalCompilerError
-          "Compound name should not be present at this point"
-  mapDefs d f = do
-    def <- lookupTopDef d
-    let tab = symTable def
-        ks = M.keys tab
-        defs = M.elems tab
-    res <- mapM f defs
-    updateTopDef d (\x -> x {symTable = M.fromList (zip ks res)})
-  forUsedTopDefs f = do
-    u <- gets used
-    mapM_
-      (\x -> do
-         def <- lookupTopDef x
-         f def)
-      u
-    --modify (\x -> x { defs = M.fromList (zip ks defs) })
-  updateTopDef i f = do
-    def <- lookupTopDef i
-    modify (\x -> x {defs = M.insert (toString (nameOf def)) (f def) (defs x)})
-  withScope s act = do
-    cur <- gets curEnv
-    e <- lookupTopDef s
-    modify (\x -> x {curEnv = e})
-    act <* modify (\x -> x {curEnv = cur})
-  addDefinition topDef k v = do
-    def <- lookupTopDef topDef
-    symTab <-
-      ensureUndef k (symTable def) $
-      pure $ M.insert (toString k) v (symTable def)
-    updateTopDef topDef (\x -> x {symTable = symTab})
-  addTopDef d = do
-    ds <- gets defs
-    let n = toString $ nameOf d
-    ensureUndef (nameOf d) ds $ modify (\s -> s {defs = M.insert n d (defs s)})
-  addUsedEnt e = modify (\x -> x {used = S.insert (nameOf e) (used x)})
-  --lookupInstance = undefined
-  --lookupInstances = undefined
-
--- | Type for representing a value in SMEIL
-data Value
-  = IntVal Type
-           Integer
-  | ArrayVal Type
-             Integer
-             [Value]
-  | BoolVal Bool
-  | DoubleVal Type
-              Double
-  | SingleVal Type
-              Float
-  deriving (Show)
-
--- | Type for representing definitions in SMEIL
-data DefType
-  = VarDef { varName :: Ident
-           , varDef  :: Variable }
-  | ConstDef { constName :: Ident
-             , constDef  :: Constant }
-  | BusDef { busName  :: Ident
-           , busRef   :: [Ident]
-           , busShape :: BusShape
-           , busDef   :: Bus }
-  | FunDef { funcName :: Ident
-           , funcDef  :: Function }
-  | EnumDef { enumName   :: Ident
-            , enumFields :: [(Ident, Integer)]
-            , enumDef    :: Enumeration }
-  | EnumFieldDef { fieldName  :: Ident
-                 , fieldValue :: Integer
-                 , defIn      :: Ident }
-  | InstDef { instName     :: Ident
-            , instDef      :: Instance
-            , instantiated :: Ident
-            , params       :: [(String, Value)]
-            , anonymous    :: Bool
-              -- Also track: Parameters
-             }
-  | ParamDef { paramName :: Ident
-             , paramType :: ParamType }
-  deriving (Show)
-
-instance Nameable DefType where
-  nameOf VarDef {..}       = varName
-  nameOf ConstDef {..}     = constName
-  nameOf BusDef {..}       = busName
-  nameOf FunDef {..}       = funcName
-  nameOf EnumDef {..}      = enumName
-  nameOf EnumFieldDef {..} = fieldName
-  nameOf InstDef {..}      = instName
-  nameOf ParamDef {..}     = paramName
-
-newtype BusShape = BusShape [(Ident, Typeness)]
-  deriving (Eq, Show)
-
-data ParamType
-  = ConstPar Typeness
-  | BusPar { ref      :: [Ident]
-           , busShape :: BusShape
-           , busState :: BusState
-           , array    :: Maybe Integer}
-  deriving (Show, Eq)
-
-data BusState
-  = Input
-  | Output
-  | Unused
-  deriving (Show, Eq)
-
-data TopDef
-  = ProcessTable { symTable :: M.HashMap String DefType
-                 , procName :: Ident
-                 , params   :: M.HashMap String ParamType
-                 , stms     :: [Statement]
-                 , procDef  :: Process
-                 }
-  | NetworkTable { symTable :: M.HashMap String DefType
-                 , netName  :: Ident
-                 , params   :: M.HashMap String ParamType
-                 , netDef   :: Network }
-  | EmptyTable
-  deriving (Show)
-
-instance Nameable TopDef where
-  nameOf ProcessTable {..} = procName
-  nameOf NetworkTable {..} = netName
-  nameOf EmptyTable        = Ident "" noLoc
-
-instance Located TopDef where
-  locOf ProcessTable {..} = locOf procDef
-  locOf NetworkTable {..} = locOf netDef
-  locOf EmptyTable {}     = noLoc
-
--- | Top-level type checking environment
-data Env = Env
-  { defs   :: M.HashMap String TopDef -- ^ Top-level symbol table
-  , curEnv :: TopDef -- ^ Scope of currently used definition
-  , used   :: S.Set Ident -- ^ Instantiated definitions
-  } deriving (Show)
-
-mkEnv :: Env
-mkEnv = Env M.empty EmptyTable S.empty
-
-lookupBus :: (References a, MonadTypeCheck m) => a -> m DefType
+lookupBus :: (References a, MonadRepr Void m) => a -> m DefType
 lookupBus r =
   let ref = trace ("lookupBus called with " ++ show (refOf r)) (refOf r)
   in lookupDef r >>= \case
        b@BusDef {} -> pure b
-         -- FIXME: Partial function head
-       _ -> throw $ ExpectedBus (head ref)
+       _ -> throw $ ExpectedBus (N.head ref)
 
 lookupTy ::
-     (MonadTypeCheck m, References a, Located a, Pretty a) => a -> m Typeness
+     (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
 lookupTy r = do
   (rest, def) <- lookupDef' r
   res <- setTypeLoc (locOf r) <$> getType rest def
@@ -329,7 +120,7 @@ lookupTy r = do
            Nothing -> throw $ UndefinedName r
 
 unifyTypes ::
-     (MonadTypeCheck m) => Maybe Type -> Typeness -> Typeness -> m Typeness
+     (MonadRepr s m) => Maybe Type -> Typeness -> Typeness -> m Typeness
 unifyTypes expected t1 t2 = do
   res <- go t1 t2
   case expected of
@@ -390,7 +181,7 @@ setTypeLoc _ Untyped     = Untyped
 setTypeLoc loc (Typed t) = Typed (t { loc = SrcLoc loc } :: Type)
 
 -- | Check expression and update references as needed
-checkExpr :: (MonadTypeCheck m) => Expr -> m (Typeness, Expr)
+checkExpr :: (MonadRepr s m) => Expr -> m (Typeness, Expr)
 checkExpr p@PrimName {..} = do
   ty' <- lookupTy name
   return (ty', p { ty = ty' } :: Expr)
@@ -410,7 +201,7 @@ checkExpr Unary {..} = do
   return (t'', Unary t'' unOp e' loc)
 
 -- | Check statements and update references as needed
-checkStm :: (MonadTypeCheck m) => Statement -> m Statement
+checkStm :: (MonadRepr s m) => Statement -> m Statement
 checkStm Assign {..} = do
   destTy <- lookupTy dest
   (t, val') <- checkExpr val
@@ -466,7 +257,7 @@ checkStm Return {..} = do
   return $ Return retVal' loc
 
 -- | Check and annotate the all topLevel definitions
-checkDef :: (MonadTypeCheck m) => DefType -> m DefType
+checkDef :: (MonadRepr s m) => DefType -> m DefType
 checkDef v@VarDef {..} = do
   -- Check that range is within type constraint
   res <- go varDef
@@ -515,7 +306,7 @@ checkDef p@ParamDef {} =
 
 
 
-checkTopDef :: (MonadTypeCheck m) => TopDef -> m ()
+checkTopDef :: (MonadRepr Void m) => TopDef -> m ()
 checkTopDef ProcessTable { ..} = do
   mapDefs procName checkDef
   body' <- withScope procName $ mapM checkStm stms
@@ -524,35 +315,28 @@ checkTopDef NetworkTable {..} =
   updateTopDef netName id
 checkTopDef EmptyTable = return ()
 
--- | Tries to look up an element 'i' in map 'm'. Performs action 'a' if
--- successful and throws an error otherwise
-ensureUndef ::
-     (MonadTypeCheck m, Nameable d, ToString a, Located a) => a -> M.HashMap String d -> m b -> m b
-ensureUndef i m a =
-  case M.lookup (toString i) m of
-    Just r  -> throw $ DuplicateName i (nameOf r)
-    Nothing -> a
-
 ensureSingleRef :: (References a) => a -> Ident
 ensureSingleRef r = go $ refOf r
   where
-    go [i] = i
-    go _ = throw $ InternalCompilerError "Compound names should not occur at this point"
+    go (i N.:| []) = i
+    go _ =
+      throw $
+      InternalCompilerError "Compound names should not occur at this point"
 
 -- | Create an environment for a process by adding its definitions
-buildDeclTab :: (MonadTypeCheck m) => Ident -> [Declaration] -> m (M.HashMap String DefType)
+buildDeclTab :: (MonadRepr s m) => Ident -> [Declaration] -> m (M.HashMap String DefType)
 buildDeclTab ctx = foldM go M.empty
   where
     go m (VarDecl v@Variable {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (VarDef name v) m
+      ensureUndef name m $ return $ M.insert (toString name) (VarDef name v Void) m
     go m (ConstDecl c@Constant {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c) m
+      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c Void) m
     go m (BusDecl b@Bus {..}) =
       ensureUndef name m $
       return $
-      M.insert (toString name) (BusDef name [ctx, name] (busToShape b) b) m
+      M.insert (toString name) (BusDef name [ctx, name] (busToShape b) b Void) m
     go m (FuncDecl f@Function {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (FunDef name f) m
+      ensureUndef name m $ return $ M.insert (toString name) (FunDef name f Void) m
     go m (EnumDecl e@Enumeration {..})
       -- Assign numbers to unnumbered enum fields in a similar fashion to C. If
       -- the first field f_0 is not assigned a value, it will be given the value
@@ -567,13 +351,13 @@ buildDeclTab ctx = foldM go M.empty
         return $
         M.insert
           (toString name)
-          (EnumDef name enumFields (e {ty = typeOf maxVal}))
+          (EnumDef name enumFields (e {ty = typeOf maxVal}) Void)
           m
       -- Insert fields of enum as entries into the entity symbol tab
       foldM
         (\m' (f, v) ->
            ensureUndef f m' $
-           return $ M.insert (toString f) (EnumFieldDef f v name) m')
+           return $ M.insert (toString f) (EnumFieldDef f v name Void) m')
         res
         enumFields
       where
@@ -590,33 +374,33 @@ buildDeclTab ctx = foldM go M.empty
             fromMaybe
             -- Identifiers cannot start with _ so everything starting with _ is
             -- reserved for our private namespace
-              (Ident ("_anonymous_" ++ toString (nameOf i)) noLoc)
+              (Ident ("_anonymous_" <> toText (nameOf i)) noLoc)
               instName
           isAnon = isNothing instName
       in ensureUndef name m $
          return $
          M.insert
            (toString name)
-           (InstDef name i (ensureSingleRef elName) [] isAnon)
+           (InstDef name i (ensureSingleRef elName) [] isAnon Void)
            m
     go _ GenDecl {} = error "TODO: Generator declarations are unhandeled"
 
-buildProcTab :: (MonadTypeCheck m) => Process -> m TopDef
+buildProcTab :: (MonadRepr s m) => Process -> m TopDef
 buildProcTab p@Process {name = n, decls = d, body = body} = do
   tab <- buildDeclTab n d
-  return $ ProcessTable tab (nameOf p) M.empty body p
+  return $ ProcessTable tab (nameOf p) M.empty body p Void
 
-buildNetTab :: (MonadTypeCheck m) => Network -> m TopDef
+buildNetTab :: (MonadRepr s m) => Network -> m TopDef
 buildNetTab net@Network {name = n, netDecls = d} = do
   tab <- foldM go M.empty d
-  return $ NetworkTable tab n M.empty net
+  return $ NetworkTable tab n M.empty net Void
   where
     go m (NetConst c@Constant {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c) m
+      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c Void) m
     go m (NetBus b@Bus {..}) =
       ensureUndef name m $
       return $
-      M.insert (toString name) (BusDef name [n, name] (busToShape b) b) m
+      M.insert (toString name) (BusDef name [n, name] (busToShape b) b Void) m
     go m (NetInst i@Instance {..}) =
       let name
             -- Identifiers cannot start with _ so we have those names reserved
@@ -624,25 +408,25 @@ buildNetTab net@Network {name = n, netDecls = d} = do
             -- names introduced by the import handler
            =
             fromMaybe
-              (Ident ("__anonymous_" ++ pprr elName) noLoc)
+              (Ident ("__anonymous_" <> pprr elName) noLoc)
               instName
           isAnon = isNothing instName
       in ensureUndef name m $
          return $
          M.insert
            (toString name)
-           (InstDef name i (ensureSingleRef elName) [] isAnon)
+           (InstDef name i (ensureSingleRef elName) [] isAnon Void)
            m
          -- TODO: Maybe we can handle indexed instances by adding a separate
          -- DefType entry IndexedInstDef
     go _ NetGen {} = error "TODO: Generator declarations are unhandeled"
 
 -- | Reduce an expression to a name and fail if impossible
-exprReduceToName :: (MonadTypeCheck m) => Expr -> m Name
+exprReduceToName :: (MonadRepr s m) => Expr -> m Name
 exprReduceToName PrimName {..} = return name
 exprReduceToName e             = throw $ ExprInvalidInContext e
 
-exprReduceToInt :: (MonadTypeCheck m) => Expr -> m Integer
+exprReduceToInt :: (MonadRepr s m) => Expr -> m Integer
 -- TODO: Run expression through simplifier attempting to evaluate it to a
 -- constant int
 exprReduceToInt (PrimLit _ (LitInt i _) _) = return i
@@ -666,7 +450,7 @@ groupWithM f ((x, y):xs)= do
   return $ (x, res) : rest
 
 unifyProcParam ::
-     (MonadTypeCheck m, Located l)
+     (MonadRepr s m, Located l)
   => (l, [(Ident, ParamType)])
   -> (l, [(Ident, ParamType)])
   -> m (l, [(Ident, ParamType)])
@@ -685,7 +469,7 @@ unifyProcParam (_, ps1) (inst, ps2) = do
 -- | Infer the types of process parameters by checking how they are instantiated
 -- and normalize instance parameter list to a <name>: <value> format
 inferParamTypes ::
-     (MonadTypeCheck m)
+     (MonadRepr Void m)
   => [(Ident, Instance)]
   -> m [(Ident, [(Ident, ParamType)])]
 inferParamTypes insts = do
@@ -750,7 +534,7 @@ inferParamTypes insts = do
     getParams EmptyTable = []
 
 -- | Populate typechecking environment with all functions defined.
-buildEnv :: (MonadTypeCheck m) => DesignFile -> m ()
+buildEnv :: DesignFile -> TyM ()
 buildEnv df = do
   let nets = universeBi df :: [Network]
       procs = universeBi df :: [Process]
@@ -792,22 +576,20 @@ buildEnv df = do
                 addDefinition
                 i
                 n
-                (ParamDef n param)))
+                (ParamDef n param Void)))
   forUsedTopDefs checkTopDef
   where
     toMap els = M.fromList (map (first toString) els)
 
-
 -- | Do typechecking of an environment. Return DesignFile with completed type
 -- annoations
-typeCheck :: (MonadIO m) => DesignFile -> m DesignFile
+--typeCheck :: (MonadIO m) => DesignFile -> m DesignFile
+-- typeCheck :: DesignFile -> DesignFile
+typeCheck :: DesignFile -> IO DesignFile
 typeCheck df = do
-  let ((_,w), e) = runIdentity $ runStateT (runWriterT (runExceptT $ unTyM go)) mkEnv
-  liftIO $ putStrLn $ ppShow e
-  liftIO $ putStrLn $ ppShow w
-  -- case r of
-  --   Right res -> liftIO $ putStrLn e
-  --   Left _    -> error "Left"
+  let res = runWriterT $ unTyM (buildEnv df)
+      res' = runReprMidentity (mkEnv Void) res
+  liftIO $ putStrLn $ ppShow res'
   return df
-  where
-    go =  buildEnv df
+  -- liftIO $ putStrLn $ ppShow e
+  -- liftIO $ putStrLn $ ppShow w

@@ -2,10 +2,15 @@
 
 module Language.SMEIL.Pretty
   ( pprr
+  , pprrString
+  , Pretty
   ) where
 
 import           Language.SMEIL.Syntax
 
+import           Data.List.NonEmpty              (toList)
+import qualified Data.Text                       as T
+import           Data.Text.Lazy                  (toStrict)
 import           Text.PrettyPrint.Mainland
 import           Text.PrettyPrint.Mainland.Class
 
@@ -22,10 +27,11 @@ instance Pretty UnitElement where
 instance Pretty Import where
   ppr (SimpleImport n q _) =
     text "import" <+>
-    cat (punctuate dot (map ppr n)) <> ppr (catL (text " as ") q) <> semi
+    cat (punctuate dot (map ppr (toList n))) <> ppr (catL (text " as ") q) <>
+    semi
   ppr (SpecificImport n e q _) =
     text "from" <+>
-    cat (punctuate dot (map ppr n)) <+>
+    cat (punctuate dot (map ppr (toList n))) <+>
     text "import" <+> commasep (map ppr e) <> ppr (catL (text " as ") q) <> semi
 
 instance Pretty Param where
@@ -155,7 +161,7 @@ instance Pretty Statement where
   ppr (Return v _) = text "return" <+> ppr v <> semi
 
 instance Pretty Enumeration where
-  ppr (Enumeration n fs _) =
+  ppr (Enumeration _ n fs _) =
     hang' (text "enum" <+> ppr n <+> lbrace </> commasep (map field fs)) </> rbrace
     where
       field :: (Ident, Maybe Expr) -> Doc
@@ -167,11 +173,11 @@ instance Pretty Direction where
   ppr (Const _) = text "const"
 
 instance Pretty Expr where
-  ppr (Binary op e1 e2 _) = ppr e1 <+> ppr op <+> ppr e2
-  ppr (Unary op e1 _)     = ppr op <> ppr e1
-  ppr (PrimLit l _)       = ppr l
-  ppr (PrimName n _)      = ppr n
-  ppr (FunCall n ps _)    = ppr n <> parens (commasep (map ppr ps))
+  ppr (Binary _ op e1 e2 _) = ppr e1 <+> ppr op <+> ppr e2
+  ppr (Unary _ op e1 _)     = ppr op <> ppr e1
+  ppr (PrimLit _ l _)       = ppr l
+  ppr (PrimName _ n _)      = ppr n
+  ppr (FunCall _ n ps _)    = ppr n <> parens (commasep (map ppr ps))
 
 instance Pretty Instance where
   ppr (Instance n i e ps _) =
@@ -226,6 +232,7 @@ instance Pretty Type where
   ppr (Single _)     = text "f32"
   ppr (Double _)     = text "f64"
   ppr (Bool _)       = text "bool"
+  ppr (String _)=    text "string"
   ppr (Array l t _)  = brackets (ppr l) <> ppr t
 
 instance Pretty Literal where
@@ -237,7 +244,7 @@ instance Pretty Literal where
   ppr (LitFalse _)    = text "false"
 
 instance Pretty Ident where
-  ppr (Ident s _) = text s
+  ppr (Ident s _) = ppr s
 
 instance Pretty Typeness where
   ppr (Typed t) = ppr t
@@ -253,10 +260,15 @@ ppIf :: Bool -> Doc -> Doc
 ppIf True d  = d
 ppIf False _ = empty
 
-pprr
+pprrString
   :: (Pretty a)
   => a -> String
-pprr = pretty 80 . ppr
+pprrString = pretty 80 . ppr
+
+pprr
+  :: (Pretty a)
+  => a -> T.Text
+pprr d = toStrict $ prettyLazyText 80 (ppr d)
 
 catL :: (Pretty a, Functor f) => Doc -> f a -> f Doc
 catL d e = catL' d <$> e
