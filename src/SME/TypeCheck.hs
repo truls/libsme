@@ -577,7 +577,7 @@ buildEnv df = do
                 i
                 n
                 (ParamDef n param Void)))
-  forUsedTopDefs checkTopDef
+  forUsedTopDefsM_ checkTopDef
   where
     toMap els = M.fromList (map (first toString) els)
 

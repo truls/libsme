@@ -134,16 +134,18 @@ class ( Monad m
         defs = M.elems tab
     res <- mapM f defs
     updateTopDef d (\x -> x {symTable = M.fromList (zip ks res)})
-
-  forUsedTopDefs :: (BaseTopDef s -> m ()) -> m ()
-  forUsedTopDefs f = do
+  forUsedTopDefsM_ :: (BaseTopDef s -> m ()) -> m ()
+  -- FIXME: The "used" here is probably a bug as unused top-level entities
+  -- should be filtered away by
+  forUsedTopDefsM_ f = void $ mapUsedTopDefsM f
+  mapUsedTopDefsM :: (BaseTopDef s -> m a) -> m [a]
+  mapUsedTopDefsM f = do
     u <- gets used
-    mapM_
+    mapM
       (\x -> do
          def <- lookupTopDef x
          f def)
-      u
-
+      (S.toList u)
   addDefinition ::
        (References a, Located b, ToString b) => a -> b -> BaseDefType s -> m ()
   addDefinition topDef k v = do
