@@ -96,9 +96,11 @@ instanceDecl =
     transformIdent i@S.Ident {}    = Just i
 
 enum :: Parser S.Enumeration
-enum = withPos $
+enum =
+  withPos $
   reserved "enum" >>
-  S.Enumeration S.Untyped <$> ident <*> braces (enumField `sepBy1` comma) <* semi
+  S.Enumeration S.Untyped <$> ident <*> braces (enumField `sepBy1` comma) <*
+  semi
   where
     enumField = (,) <$> ident <*> optional (symbol "=" *> expression)
 
@@ -148,7 +150,8 @@ constDecl :: Parser S.Constant
 constDecl =
   withPos
     (reserved "const" >>
-     S.Constant <$> (ident <* colon) <*> (S.Typed <$> typeName) <*> (symbol "=" *> expression) <*
+     S.Constant <$> (ident <* colon) <*> (S.Typed <$> typeName) <*>
+     (symbol "=" *> expression) <*
      semi <?> "constant declaration")
 
 function :: Parser S.Function
@@ -244,7 +247,8 @@ term =
     ] <?>
   "term"
   where
-    funCall = S.FunCall S.Untyped <$> name <*> parens (expression `sepBy1` comma)
+    funCall =
+      S.FunCall S.Untyped <$> name <*> parens (expression `sepBy1` comma)
     arrayLit = S.LitArray <$> brackets (integer `sepBy` comma)
     -- TODO: Temporary limitation
     --arrayLit = S.LitArray <$> brackets (expression `sepBy` comma)
@@ -256,6 +260,7 @@ table =
   in [ [ prefix "+" unary S.UnPlus
        , prefix "-" unary S.UnMinus
        , prefix "!" unary S.NotOp
+       , prefix "~" unary S.NegOp
        ]
      , [binary "*" bin S.MulOp, binary "/" bin S.DivOp, binary "%" bin S.ModOp]
      , [binary "+" bin S.PlusOp, binary "-" bin S.MinusOp]
@@ -264,12 +269,11 @@ table =
        , binary "<=" bin S.LeqOp
        , binary "<" bin S.LtOp
        , binary ">" bin S.GtOp
-       , binary "==" bin S.EqOp
-       , binary "!=" bin S.EqOp
        ]
-     , [binary "&" bin S.AndOp]
-     , [binary "^" bin S.XorOp]
-     , [binary "|" bin S.OrOp]
+     , [binary "==" bin S.EqOp, binary "!=" bin S.EqOp]
+     , [binary "&" bin S.AndOp, binary "^" bin S.XorOp, binary "|" bin S.OrOp]
+     , [binary "&&" bin S.ConOp]
+     , [binary "||" bin S.DisOp]
      ]
 
 posSymbol :: T.Text -> (SrcLoc -> a) -> Parser (a, SrcLoc)
@@ -279,19 +283,18 @@ posSymbol s f = do
   pos <- makePos'
   return (f pos, pos)
 
-binary :: T.Text
-       -> (a -> b -> b -> SrcLoc -> b)
-       -> (SrcLoc -> a)
-       -> Operator Parser b
+binary ::
+     T.Text
+  -> (a -> b -> b -> SrcLoc -> b)
+  -> (SrcLoc -> a)
+  -> Operator Parser b
 binary n f g =
   InfixL
     (do (g', pos) <- posSymbol n g
         return (\s r -> f g' s r pos))
 
-prefix :: T.Text
-       -> (a -> b -> SrcLoc -> b)
-       -> (SrcLoc -> a)
-       -> Operator Parser b
+prefix ::
+     T.Text -> (a -> b -> SrcLoc -> b) -> (SrcLoc -> a) -> Operator Parser b
 prefix n f g =
   Prefix
     (do (g', pos) <- posSymbol n g
@@ -301,8 +304,10 @@ typeName :: Parser S.Type
 typeName =
   withPos
     (choice
-       [ char 'i' >> S.Signed <$> integer
-       , char 'u' >> S.Unsigned <$> integer
+       [ try $ char 'i' >> S.Signed . Just <$> integer
+       , symbol "int" >> pure (S.Signed Nothing)
+       , try $ char 'u' >> S.Unsigned . Just <$> integer
+       , symbol "uint" >> pure (S.Unsigned Nothing)
        , char 'f' >>
          ((string "32" >> pure S.Single) <|> (string "64" >> pure S.Double))
        , symbol "bool" >> pure S.Bool

@@ -3,4 +3,5 @@ module SME.CodeGen.Python
 
 import           SME.CodeGen.Common
 
+genPython :: GenM OutputPlan
 genPython = undefined

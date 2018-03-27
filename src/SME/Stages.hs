@@ -1,25 +1,26 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
+--{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Stage manager module. Manages the compilation process and
 
 module SME.Stages
   ( Stages(..)
   , Config(..)
-  , CompilerM (..)
+ -- , CompilerM (..)
   , compile
   ) where
 
 import           Control.Exception     (throw, tryJust)
 import           Control.Monad         (when)
-import           Control.Monad.Reader
 import           Data.Char             (isLetter, toLower)
 import qualified Data.Text.IO          as TIO
 import           Text.Show.Pretty      (ppShow)
 
 import           Language.SMEIL.Pretty
+import           SME.CodeGen
 import           SME.Error
 import           SME.ImportResolver
+import           SME.Simulate
 import           SME.TypeCheck
 
 data Stages
@@ -45,14 +46,14 @@ data Config = Config
 dumpStage :: Config -> Stages -> Bool
 dumpStage c s = s `elem` dumpStages c
 
-data CompilerState = CompilerState
-  { config    :: Config -- ^ The global compilation pipeline configuration
-  , renamings :: RenameState
-  }
+-- data CompilerState = CompilerState
+--   { config    :: Config -- ^ The global compilation pipeline configuration
+--   , renamings :: RenameState
+--   }
 
-newtype CompilerM a = CompilerM
-  { unGlobalM :: Reader CompilerState a
-  } deriving (Functor, Applicative, Monad, MonadReader CompilerState)
+-- newtype CompilerM a = CompilerM
+--   { unGlobalM :: Reader CompilerState a
+--   } deriving (Functor, Applicative, Monad, MonadReader CompilerState)
 
 instance Read Stages where
   readsPrec _ input =
@@ -80,5 +81,6 @@ compile conf = do
   tyEnv <- case res of
             Left e  -> throw $ CompilerError e
             Right r -> pure r
-  when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
-  return ()
+  simulate tyEnv
+  --when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
+  --genOutput (outputDir conf) VHDL tyEnv

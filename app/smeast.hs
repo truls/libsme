@@ -13,9 +13,9 @@ import qualified Options.Applicative   as O (value)
 import           System.Directory      (doesFileExist)
 import           Text.Show.Pretty      (ppShow)
 
--- import           Language.SMEIL.JSON
 import           Language.SMEIL.Parser (parse)
 import           Language.SMEIL.Pretty (pprr)
+-- import           Language.SMEIL.JSON
 -- import           Language.SMEIL.Syntax
 
 data Format

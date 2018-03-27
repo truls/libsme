@@ -20,11 +20,14 @@ description:         Please see the README on Github at <https://github.com/trul
 
 ghc-options:
   - -Wall
+  - -Wcompat
+  - -Wnoncanonical-monad-instances
+  - -Wnoncanonical-monadfail-instances
+  - -O0
 
 dependencies:
   - base >= 4.7 && < 5
   - language-vhdl-quote
-  # - language-smeil
   - containers >= 0.5.10.2
   - unordered-containers >= 0.2.8.0
   - filepath >= 1.4.1.2
@@ -32,20 +35,26 @@ dependencies:
   - mtl >= 2.2.1
   - uniplate >= 1.6.12
   - pretty-show >= 1.6.13
-  - mainland-pretty >= 0.6.1
-  - aeson >= 1.2.3.0
-  - bytestring >= 0.10.8.1
-  - split >= 0.2.3.2
+  # Reenable and delete local copy once Semigroup instances have been added
+  #- mainland-pretty >= 0.6.1
   - megaparsec >= 6.3.0
-  - aeson-pretty >= 0.8.5
   - bimap >= 0.3.3
-  - srcloc >= 0.5.1.1
+  # Reenable once Semigroup instances have been added
+  #- srcloc >= 0.5.1.1
   - exceptions >= 0.8.3
-  - lens >= 4.15.4
   - hashable >= 1.2.6.1
   - extra >= 1.6.3
   - text >= 1.2.2.2
-  - mono-traversable
+  - mono-traversable >= 1.0.8.1
+  - template-haskell >= 2.12.0.0
+  - makefile >= 1.1.0.0
+  - fgl >= 5.6.0.0
+  # - file-embed >= 0.0.10.1
+  #- aeson >= 1.2.3.0
+  #- bytestring >= 0.10.8.1
+  # - split >= 0.2.3.2
+  # - aeson-pretty >= 0.8.5
+  #- lens >= 4.15.4
   #- recursion-schemes
 
 library:

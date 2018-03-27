@@ -5,8 +5,10 @@
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE TypeApplications           #-}
 
--- | Transform the SMEIL AST to a sequence of flat lists which are easier to manipulate.
+-- | Internal representation of an SMEIL program and functions for manipulating
+-- it.
 
 module SME.Representation
   ( ReprM
@@ -19,17 +21,24 @@ module SME.Representation
   , MonadRepr(..)
   , ParamType(..)
   , Void(..)
+  , Extension(..)
+  , BusVisibility(..)
   , ensureUndef
   , mkEnv
   , runReprM
+  , runReprStM
   , runReprMidentity
   , unReprM
+  , isBus
+  , mkVarDef
+  , lookupEx
   ) where
 
 import           Control.Exception      (throw)
 import           Control.Monad          (void)
 import           Control.Monad.Except   (ExceptT, MonadError, runExceptT)
 import           Control.Monad.Identity (Identity, runIdentity)
+import           Control.Monad.IO.Class
 import           Control.Monad.State    (MonadState, StateT, gets, modify,
                                          runStateT)
 import qualified Data.HashMap.Strict    as M
@@ -42,9 +51,9 @@ import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
 import           SME.Error
 
---import           Debug.Trace                 (trace)
-trace :: String -> a -> a
-trace _ = id
+import           Debug.Trace            (trace, traceM)
+--trace :: String -> a -> a
+--trace _ = id
 
 newtype ReprM m s a = ReprM
   { unReprM :: ExceptT TypeCheckErrors (StateT (BaseEnv s) m) a
@@ -53,6 +62,7 @@ newtype ReprM m s a = ReprM
              , Monad
              , MonadState (BaseEnv s)
              , MonadError TypeCheckErrors
+             , MonadIO
              )
 
 -- TODO: Figure out something nicer instead of these functions
@@ -63,66 +73,90 @@ runReprMidentity e f = runIdentity $ runStateT (runExceptT $ unReprM f) e
 runReprM :: BaseEnv s -> ReprM m s a -> m (Either TypeCheckErrors a, BaseEnv s)
 runReprM e f = runStateT (runExceptT $ unReprM f) e
 
+runReprStM ::
+     BaseEnv s -> ReprM (m st) s a -> m st (Either TypeCheckErrors a, BaseEnv s)
+runReprStM e f = runStateT (runExceptT $ unReprM f) e
+
 -- | Type checking monad
 class ( Monad m
       , MonadState (BaseEnv s) m
       -- , MonadWriter Log m
       , MonadError TypeCheckErrors m
+      , Extension s
       ) =>
-      MonadRepr s m where
+      MonadRepr s m
+  -- | Looks up a definition,
+                              where
   lookupDef :: (References a) => a -> m (BaseDefType s)
   lookupDef r = do
     (_, res) <- lookupDef' r
     return res
+  {-# INLINEABLE lookupDef #-}
   lookupDef' :: (References a) => a -> m ([Ident], BaseDefType s)
-  lookupDef' r = go (trace ("Lookup called with " ++ show (refOf r)) (refOf r))
-      -- Three cases.
-      -- Case one: Single name [Ident] is found in local scope. Return that
-      -- Case two: First name [Ident, ..] refers to a bus in local scope. Return
-      -- that.
-      -- Case three: Name [Ident, ...] refers to a top-level name. Switch
-      -- scope, remaining name compounds should fall into previous cases
+  lookupDef' r = do
+    ti <- curEnvIdent
+    go
+      (trace
+         ("Lookup called with " ++ show (refOf r) ++ " context " ++ show ti)
+         (refOf r))
+    -- Three cases.
+    -- Case one: Single name [Ident] is found in local scope. Return that
+    -- Case two: First name [Ident, ..] refers to a bus in local scope. Return
+    -- that.
+    -- Case three: Name [Ident, ...] refers to a top-level name. Switch
+    -- scope, remaining name compounds should fall into previous cases
     where
       go (i :| []) = do
-        d <- gets curBaseEnv
+        d <- getCurEnv
+        traceM ("Symbol table " ++ show (nameOf d))
         res <- lookupEx i (symTable d)
         return ([], res)
       go (i :| is) = do
-        d <- gets curBaseEnv
-        lookupEx i (symTable d) >>= \case
-          b@BusDef {} -> pure (is, b)
-          InstDef {instantiated = instantiated}
-            -- N.fromList is a partial function but is probably safe to use here
-            -- as the preceding pattern match of go matches the case where is is
-            -- empty
-           -> withScope instantiated (go (N.fromList is))
-          ParamDef {paramType = BusPar {..}} ->
-            case ref of
-              (r':rs') -> withScope r' (go (N.fromList (rs' ++ is)))
-              _ ->
-                throw $ InternalCompilerError "Bus reference is a single name"
-          _
-            -- If first name component doesn't resolve to a possible compound
-            -- name in current scope, it probably refers to a top-level
-            -- construct, so we look again in that
-           -> withScope i (go (N.fromList is))
+        d <- getCurEnv
+        case M.lookup (toString i) (symTable d) of
+          Just lookupRes ->
+            case lookupRes of
+              b@BusDef {} -> pure (is, b)
+              InstDef {instantiated = instantiated}
+              -- N.fromList is a partial function but is probably safe to use here
+              -- as the preceding pattern match of go matches the case where is is
+              -- empty
+               ->
+                trace
+                  "Got back InstDef "
+                  withScope
+                  instantiated
+                  (go (N.fromList is))
+              ParamDef {paramType = BusPar {..}} ->
+                trace "GOt back ParamDef" $
+                case ref of
+                  (_ :| []) ->
+                    throw $
+                    InternalCompilerError "Bus reference is a single name"
+                  (r' :| rs') -> withScope r' (go (N.fromList (rs' ++ is)))
+              _
+              -- If first name component doesn't resolve to a possible compound
+              -- name in current scope, it probably refers to a top-level
+              -- construct, so we look again in that
+               -> trace "lookup recursing" $ withScope i (go (N.fromList is))
+          Nothing ->
+            trace "lookup recursing2" $ withScope i (go (N.fromList is))
+  {-# INLINEABLE lookupDef' #-}
   lookupTopDef :: (References a, Located a, Pretty a) => a -> m (BaseTopDef s)
   lookupTopDef i =
     go $ trace ("lookupTopDef called with " ++ show (refOf i)) (refOf i)
     where
       go (ident :| []) = do
         ds <- gets defs
-        lookupEx ident ds >>= \case
-          EmptyTable ->
-            throw $ InternalCompilerError "Lookup returned EmptyTable"
-          e -> pure e
+        lookupEx ident ds
       go _
         -- Top-level definitions will only be accessed through compound names if
         -- they reside in imported modules. Any such accesses leading to defined
         -- modules have been renamed by ImportResolver at this point. Therefore,
         -- the use of such a name at this point means that the name refers to a
         -- non-existing entity
-       = throw $ UndefinedName i
+       = trace "lookupTopDef" $ throw $ UndefinedName i
+  --{-# INLINEABLE lookupTopdef #-}
   updateTopDef ::
        (References a, Located a, Pretty a)
     => a
@@ -131,6 +165,7 @@ class ( Monad m
   updateTopDef i f = do
     def <- lookupTopDef i
     modify (\x -> x {defs = M.insert (toString (nameOf def)) (f def) (defs x)})
+  --{-# INLINEABLE updateTopdef #-}
   updateDefsM_ ::
        (References a, Located a, Pretty a)
     => a
@@ -148,6 +183,8 @@ class ( Monad m
     => a
     -> (BaseDefType s -> m a)
     -> m [a]
+  curEnvIdent :: m Ident
+  curEnvIdent = gets curEnv
   mapDefsM d f = do
     def <- lookupTopDef d
     let tab = symTable def
@@ -163,33 +200,92 @@ class ( Monad m
     mapM
       (\x -> do
          def <- lookupTopDef x
+         --withScope x $ f def
          f def)
       (S.toList u)
   addDefinition ::
+       (References a, Located a, Pretty a, ToString a)
+    => a
+    -> BaseDefType s
+    -> m ()
+  addDefinition k v = do
+    cur <- gets curEnv
+    addDefinition' cur k v
+  addDefinition' ::
        (References a, Located a, Pretty a, Located b, ToString b)
     => a
     -> b
     -> BaseDefType s
     -> m ()
-  addDefinition topDef k v = do
+  addDefinition' topDef k v = do
     def <- lookupTopDef topDef
     symTab <-
       ensureUndef k (symTable def) $
       pure $ M.insert (toString k) v (symTable def)
     updateTopDef topDef (\x -> x {symTable = symTab})
+  -- | Executes action act with a fresh environment
+  withLocalEnv :: m a -> m a
+  withLocalEnv act = do
+    cur <- getCurEnv
+    let symTab = symTable cur
+    res <- act
+    updateCurEnv (\x -> x {symTable = symTab})
+    return res
   addUsedEnt :: (Nameable a) => a -> m ()
   addUsedEnt e = modify (\x -> x {used = S.insert (nameOf e) (used x)})
-  withScope :: (References a, Located a, Pretty a) => a -> m b -> m b
+  --setUsedBus :: Ref -> (Maybe Ident, BusState) -> m ()
+  setUsedBus :: Ref -> (Ref, BusState) -> m ()
+  setUsedBus r s = do
+    cur <- gets curEnv
+    traceM ("setUsedbus " ++ show cur ++ " " ++ show r ++ " " ++ show s)
+    --withScope (N.head r)
+    updateCurEnv
+      (\case
+         p@ProcessTable {usedBuses = usedBuses} ->
+           p {usedBuses = M.insertWith S.union r (S.singleton s) usedBuses}
+         other -> other)
+  getBusState :: Ref -> m (Maybe [(Ref, BusState)])
+  getBusState r =
+    M.lookup r . usedBuses <$> getCurEnv >>= \case
+      Just s -> pure $ Just $ S.toList s
+      Nothing -> pure Nothing --Unassigned
+  -- addUsedBus :: (References a) => a -> m ()
+  -- addUsedBus r = do
+  --   cur <- gets curBaseEnv
+  --   modify (\x -> x {1
+  withScope :: (References a, Pretty a, Located a) => a -> m b -> m b
   withScope s act = do
-    cur <- gets curBaseEnv
-    e <- lookupTopDef s
-    modify (\x -> x {curBaseEnv = e})
-    act <* modify (\x -> x {curBaseEnv = cur})
+    cur <- gets curEnv
+    new <- lookupTopDef s
+    modify (\x -> x {curEnv = nameOf new})
+    act <* modify (\x -> x {curEnv = cur})
+  getCurEnv :: (MonadRepr a m) => m (BaseTopDef a)
+  getCurEnv = do
+    e <- gets curEnv
+    traceM ("getCurEnv " ++ show e)
+    lookupTopDef e
+  updateCurEnv :: (MonadRepr a m) => (BaseTopDef a -> BaseTopDef a) -> m ()
+  updateCurEnv f = do
+    e <- gets curEnv
+    updateTopDef e f
   addTopDef :: BaseTopDef s -> m ()
   addTopDef d = do
     ds <- gets defs
     let n = toString $ nameOf d
     ensureUndef (nameOf d) ds $ modify (\s -> s {defs = M.insert n d (defs s)})
+  updateDef ::
+       (MonadRepr s m, Located a, References a, Pretty a)
+    => a
+    -> (BaseDefType s -> BaseDefType s)
+    -> m ()
+  updateDef d f = do
+    cur <- gets curEnv
+    def <- lookupDef d
+    traceM ("In updateDef: " ++ show (nameOf def)) -- ++ " " ++ show cur)
+    let def' = f def
+    updateTopDef
+      cur
+      (\x -> x {symTable = M.insert (toString (nameOf def)) def' (symTable x)})
 
 lookupEx ::
      (ToString a, Pretty a, Located a, MonadRepr s m)
@@ -198,7 +294,7 @@ lookupEx ::
   -> m b
 lookupEx e m = case M.lookup (toString e) m of
   Just r  -> pure r
-  Nothing -> throw $ UndefinedName e
+  Nothing -> trace "lookupEx" $ throw $ UndefinedName e
 
 -- | Tries to look up an element 'i' in map 'm'. Performs action 'a' if
 -- successful and throws an error otherwise
@@ -208,6 +304,19 @@ ensureUndef i m a =
   case M.lookup (toString i) m of
     Just r  -> throw $ DuplicateName i (nameOf r)
     Nothing -> a
+
+class Extension a where
+  {-# MINIMAL emptyExt #-}
+  emptyExt :: a
+  envExt :: BaseEnv a -> a
+  envExt = Prelude.const emptyExt
+  topExt :: BaseTopDef a -> a
+  topExt = Prelude.const emptyExt
+  defExt :: BaseDefType a -> a
+  defExt = Prelude.const emptyExt
+
+instance Extension Void where
+  emptyExt = Void
 
 data Void = Void
   deriving Show
@@ -226,45 +335,80 @@ data Value
               Float
   deriving (Show)
 
+mkVarDef :: Ident -> Typeness -> a -> BaseDefType a
+mkVarDef i t el =
+  VarDef
+  { varName = i
+  , varDef =
+      Variable {name = i, ty = t, val = Nothing, range = Nothing, loc = noLoc}
+  , varState = Used
+  , varVal = LitInt 0 noLoc
+  , ext = el
+  }
+
 -- | Type for representing definitions in SMEIL
 data BaseDefType a
   = VarDef { varName  :: Ident
            , varDef   :: Variable
            , varState :: VarState
-           , ext      :: a}
+           , varVal   :: Literal
+           -- , varRange :: (Integer, Integer)
+           , ext      :: a }
   | ConstDef { constName  :: Ident
              , constDef   :: Constant
              , constState :: VarState
-             , ext        :: a}
+             , constVal   :: Literal
+             , ext        :: a }
   | BusDef { busName  :: Ident
-           , busRef   :: [Ident]
+           , busRef   :: Ref
            , busShape :: BusShape
            , busDef   :: Bus
            , busState :: BusState
-           , ext      :: a}
+           , shared   :: BusVisibility -- ^ Property indicating if a bus is used for
+                         -- communicating outside of an instance. Starts
+                         -- out as true. Flips to false if a bus is read
+                         -- from and written to in the same
+                         -- cycle. Accessing a bus with shared = false from
+                         -- outside the process where it is declared is an error
+           , ext      :: a }
   | FunDef { funcName :: Ident
            , funcDef  :: Function
-           , ext      :: a}
+           , ext      :: a }
   | EnumDef { enumName   :: Ident
             , enumFields :: [(Ident, Integer)]
+            , isRegular  :: Bool
             , enumDef    :: Enumeration
-            , ext        ::a }
+            , ext        :: a }
   | EnumFieldDef { fieldName  :: Ident
                  , fieldValue :: Integer
                  , defIn      :: Ident
-                 , ext        :: a}
+                 , ext        :: a }
   | InstDef { instName     :: Ident
             , instDef      :: Instance
             , instantiated :: Ident
-            , params       :: [(String, Value)]
+            , params       :: [Ref]
             , anonymous    :: Bool
-            , ext          ::a
+            , ext          :: a
               -- Also track: Parameters
              }
   | ParamDef { paramName :: Ident
              , paramType :: ParamType
-             , ext       ::a }
+             , ext       :: a }
   deriving (Show)
+
+isBus :: BaseDefType a -> Bool
+isBus BusDef {} = True
+isBus _         = False
+
+instance Functor BaseDefType where
+  fmap f d@VarDef {..}       = d { ext = f ext}
+  fmap f d@ConstDef {..}     = d { ext = f ext}
+  fmap f d@BusDef {..}       = d { ext = f ext}
+  fmap f d@FunDef {..}       = d { ext = f ext}
+  fmap f d@EnumDef {..}      = d { ext = f ext}
+  fmap f d@EnumFieldDef {..} = d { ext = f ext}
+  fmap f d@InstDef {..}      = d { ext = f ext}
+  fmap f d@ParamDef {..}     = d { ext = f ext}
 
 instance Nameable (BaseDefType a) where
   nameOf VarDef {..}       = varName
@@ -276,15 +420,27 @@ instance Nameable (BaseDefType a) where
   nameOf InstDef {..}      = instName
   nameOf ParamDef {..}     = paramName
 
-newtype BusShape = BusShape [(Ident, Typeness)]
+newtype BusShape = BusShape [(Ident, (Typeness, Maybe Literal))]
   deriving (Eq, Show)
+
+--type BusShape = M.HashMap Ident (Typeness, Maybe Expr)
+
+data InstParam =
+  InstConstPar Ref
+  | InstBusPar Ref
+  deriving (Show, Eq)
 
 data ParamType
   = ConstPar Typeness
-  | BusPar { ref      :: [Ident]
+  | BusPar { ref      :: Ref
            , busShape :: BusShape
            , busState :: BusState
            , array    :: Maybe Integer}
+  deriving (Show, Eq)
+
+data BusVisibility
+  = Shared
+  | Private
   deriving (Show, Eq)
 
 data BusState
@@ -292,7 +448,7 @@ data BusState
   | Output
   | Local
   | Unassigned
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 data VarState
   = Used
@@ -300,38 +456,50 @@ data VarState
   deriving (Eq, Show)
 
 data BaseTopDef a
-  = ProcessTable { symTable :: M.HashMap String (BaseDefType a)
-                 , procName :: Ident
-                 , params   :: M.HashMap String ParamType
-                 , stms     :: [Statement]
-                 , procDef  :: Process
-                 , ext      :: a
-                 }
+  = ProcessTable { symTable  :: M.HashMap String (BaseDefType a)
+                 , procName  :: Ident
+                 -- FIXME: Consider removing params since the info already
+                 -- exists in the symtable
+                 , params    :: M.HashMap String ParamType
+                 , stms      :: [Statement]
+                   --, usedBuses :: M.HashMap Ref (S.Set (Maybe Ident, BusState))
+                 , usedBuses :: M.HashMap Ref (S.Set (Ref, BusState))
+                 --, referencedProcs ::
+                 , procDef   :: Process
+                 , ext       :: a }
   | NetworkTable { symTable :: M.HashMap String (BaseDefType a)
                  , netName  :: Ident
                  , params   :: M.HashMap String ParamType
                  , netDef   :: Network
-                 , ext      :: a}
-  | EmptyTable
+                 , ext      :: a }
   deriving (Show)
+
+instance Functor BaseTopDef where
+  fmap f t@ProcessTable {..} =
+    t {symTable = (f <$> ) <$>  symTable, ext = f ext}
+  fmap f t@NetworkTable {..} =
+    t {symTable = (f <$>) <$> symTable, ext = f ext}
 
 instance Nameable (BaseTopDef a) where
   nameOf ProcessTable {..} = procName
   nameOf NetworkTable {..} = netName
-  nameOf EmptyTable        = Ident "" noLoc
 
 instance Located (BaseTopDef a) where
   locOf ProcessTable {..} = locOf procDef
   locOf NetworkTable {..} = locOf netDef
-  locOf EmptyTable {}     = noLoc
+
+instance Functor BaseEnv where
+  fmap f BaseEnv {..} =
+    BaseEnv ((f <$>) <$> defs) curEnv used (f ext)
 
 -- | Top-level type checking environment
 data BaseEnv a = BaseEnv
-  { defs       :: M.HashMap String (BaseTopDef a) -- ^ Top-level symbol table
-  , curBaseEnv :: BaseTopDef a -- ^ Scope of currently used definition
-  , used       :: S.Set Ident -- ^ Instantiated definitions
-  , ext        :: a
+  { defs   :: M.HashMap String (BaseTopDef a) -- ^ Top-level symbol table
+  --, curEnv :: BaseTopDef a -- ^ Scope of currently used definition
+  , curEnv :: Ident -- TODO: Probably change to Maybe Ref
+  , used   :: S.Set Ident -- ^ Instantiated definitions
+  , ext    :: a
   } deriving (Show)
 
 mkEnv :: a -> BaseEnv a
-mkEnv = BaseEnv M.empty EmptyTable S.empty
+mkEnv = BaseEnv M.empty (Ident "__noEnv__" noLoc) S.empty

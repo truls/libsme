@@ -13,18 +13,18 @@ module SME.TypeCheck
   ) where
 
 import           Control.Arrow               (first)
-import           Control.Exception           (catch, throw)
+import           Control.Exception           (throw)
 import           Control.Monad               (foldM, forM, forM_, unless,
                                               zipWithM)
-import           Control.Monad.Except        (MonadError, catchError)
+import           Control.Monad.Except        (MonadError)
 
 import           Control.Monad.Identity      (Identity)
-import           Control.Monad.IO.Class      (liftIO)
 import           Control.Monad.State         (MonadState)
-import           Control.Monad.Writer        (MonadWriter, WriterT, runWriterT)
+import           Control.Monad.Writer        (MonadWriter, WriterT, runWriterT,
+                                              tell)
 import           Data.Generics.Uniplate.Data (universeBi)
 import qualified Data.HashMap.Strict         as M
-import           Data.List                   (sortOn)
+import           Data.List                   (mapAccumR, sortOn)
 import qualified Data.List.NonEmpty          as N
 import           Data.Loc                    (Loc, Located (..), SrcLoc (..),
                                               noLoc)
@@ -35,13 +35,13 @@ import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
 import           SME.Error
 import           SME.Representation
-
+import           SME.Warning
 
 import           Text.Show.Pretty            (ppShow)
 
---import           Debug.Trace                 (trace)
-trace :: String -> a -> a
-trace _ = id
+import           Debug.Trace                 (trace, traceM)
+-- trace :: String -> a -> a
+-- trace _ = id
 
 -- * Type checking monad and data structures for holding type checking state
 
@@ -49,20 +49,21 @@ type Env = BaseEnv Void
 type DefType = BaseDefType Void
 type TopDef = BaseTopDef Void
 
-data TyLog =
-  Inf Info
-  | Warn Warning
-  deriving (Show)
+-- data TyLog =
+--   Inf Info
+--   | Warn Warning
+--   deriving (Show)
 
-newtype Info =
-  TypeFromRange String
-  deriving (Show)
+-- newtype Info =
+--   TypeFromRange String
+--   deriving (Show)
 
-newtype Warning =
-  TypeCheckWarning String
-  deriving (Show)
+-- newtype Warning =
+--   TypeCheckWarning String
+--   deriving (Show)
 
-type Log = [TyLog]
+--type Log = [TyLog]
+type Log = [TypeCheckWarning]
 
 -- | Main typechecking monad
 newtype TyM a = TyM
@@ -70,12 +71,17 @@ newtype TyM a = TyM
   } deriving ( Functor
              , Applicative
              , Monad
-             , MonadWriter Log
+               , MonadWriter Log
              , MonadState Env
              , MonadError TypeCheckErrors
              )
 
 instance (MonadRepr Void) TyM
+
+data AccessType
+  = Store
+  | Load
+  deriving Eq
 
 lookupBus :: (References a, MonadRepr Void m) => a -> m DefType
 lookupBus r =
@@ -87,15 +93,16 @@ lookupBus r =
 lookupTy ::
      (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
 lookupTy r = do
+  traceM "LookupTy entered"
   (rest, def) <- lookupDef' r
   res <- setTypeLoc (locOf r) <$> getType rest def
-  return $ trace ("lookupTy for " ++ show (refOf r) ++ " return " ++ show res) res
+  return $
+    trace ("lookupTy for " ++ show (refOf r) ++ " return " ++ show res) res
   where
     getType _ VarDef {..} = pure $ typeOf varDef
     getType _ ConstDef {..} = pure $ typeOf constDef
-    getType [rest] BusDef {..} = lookupBusShape busShape rest
-    getType _ BusDef {} -- TODO: Better error message
-     = throw $ UndefinedName r
+    getType [rest] BusDef {..} = fst <$> lookupBusShape busShape rest
+    getType _ BusDef {} = trace "throw busdef" $ throw $ BusReferencedAsValue r
     getType _ FunDef {} = undefined --pure $ typeOf funcDef
     getType _ EnumDef {..} = throw $ ReferencedAsValue enumDef
     getType _ EnumFieldDef {..} = pure $ typeOf fieldValue
@@ -103,21 +110,65 @@ lookupTy r = do
     getType [] ParamDef {..} =
       case paramType of
         ConstPar t  -> pure t
-        BusPar {..} -> error "TODO: Make proper error. Bus definition referenced as value." -- throw $ ReferencedAsValue
+        BusPar {..} -> throw $ BusReferencedAsValue r
     getType [rest] ParamDef {..} =
       case paramType of
-        ConstPar _  -> -- TODO: Better error message
-          throw $ UndefinedName r
-        BusPar {..} -> lookupBusShape busShape rest
+        ConstPar _ -- TODO: Better error message
+         -> trace "ParamType " $ throw $ UndefinedName r
+        BusPar {..} -> fst <$> lookupBusShape busShape rest
     getType _ ParamDef {} -- TODO: Better error message
-     = throw $ UndefinedName r
-
+     = trace "ParamDef" $ throw $ UndefinedName r
     lookupBusShape busShape rest =
       let BusShape bs = busShape
       -- TODO: Maybe use a map for busShape
       in case lookup rest bs of
            Just a  -> pure a
-           Nothing -> throw $ UndefinedName r
+           Nothing -> trace "lookupBusShape" $ throw $ UndefinedName r
+
+-- | Tracks and update the usage of a variable in a scope and throws if
+-- inconsistencies are found
+trackUsage ::
+     (MonadRepr s m, References a, Located a, Pretty a)
+  => AccessType
+  -> a
+  -> (a -> m b)
+  -> m b
+trackUsage t r act
+  --traceM $ ("In track usage: " ++ show (nameOf def))
+  -- TODO: Track function usage also
+ =
+  lookupDef r >>= \case
+    ConstDef {} -> do
+      unless (t == Load) $
+        throw $ WroteConstant r
+      updateDef r (\x -> x {constState = Used})
+      act r
+    VarDef {} -> do
+      updateDef r (\x -> x {varState = Used})
+      act r
+    BusDef {busRef = bRef} -> do
+      getBusState bRef >>= \case
+        Nothing ->
+          setUsedBus
+            bRef
+            -- TODO: We have to make sure that the reference we insert here
+            -- reflects how the bus is actually referenced within the process
+            ( refOf $ N.head bRef
+            , if t == Load
+                then Input
+                else Output )
+        Just a ->
+          forM_
+            (map (t, ) a)
+            (\case
+               (Load, (_, Input)) -> return ()
+               (Load, _) ->
+                 throw $ ReadOutputBus r
+               (Store, (_, Output)) -> return ()
+               (Store, _) ->
+                 throw $ WroteInputBus r)
+      act r
+    _ -> act r
 
 unifyTypes ::
      (MonadRepr s m) => Maybe Type -> Typeness -> Typeness -> m Typeness
@@ -129,52 +180,52 @@ unifyTypes expected t1 t2 = do
       return (Typed t)
     Nothing -> return res
   where
-    go Untyped Untyped         = error "Untyped" -- pure Untyped
+    go Untyped Untyped         = error "Untyped" -- TODO: Better error
     go Untyped t               = pure t
     go t Untyped               = pure t
     go (Typed t1') (Typed t2') = Typed <$> go' t1' t2'
-    -- go t1' t2' =
-    --   if t1' == t2'
-    --     then pure t1'
-    --     else throw $ TypeMismatchError t1' t2'
     go' (Unsigned l1 loc) (Unsigned l2 _) = return $ Unsigned (max l1 l2) loc
     go' (Signed l1 loc) (Signed l2 _) = return $ Signed (max l1 l2) loc
-    go' (Unsigned l1 loc) (Signed l2 _) -- FIXME: Does this formula makes sense?
+    go' (Unsigned (Just l1) loc) (Signed (Just l2) _) -- FIXME: Does formula below makes sense?
      =
       return $
       Signed
-        (max l1 l2 +
-         (if l1 >= l2
-            then 1
-            else 0))
+        (Just
+           ((max l1 l2 +
+             (if l1 >= l2
+                then 1
+                else 0))))
         loc
-    go' (Signed l1 loc) (Unsigned l2 _) =
+    go' (Signed (Just l1) loc) (Unsigned (Just l2) _) =
       return $
       Signed
-        (max l1 l2 +
-         (if l2 >= l1
-            then 1
-            else 0))
+        (Just
+           ((max l1 l2 +
+             (if l2 >= l1
+                then 1
+                else 0))))
         loc
-    go' t1'@(Array l1 ity1 _loc) t2'@(Array l2 ity2 loc) = do
-      (Typed ity) <- unifyTypes Nothing (Typed ity1) (Typed ity2)
-      unless (l1 == l2) $ throw $ TypeMismatchError (Typed t1') (Typed t2')
-      return (Array l1 ity loc)
+    go' t1'@(Array l1 ity1 _loc) t2'@(Array l2 ity2 loc) =
+      unifyTypes Nothing (Typed ity1) (Typed ity2) >>= \case
+        (Typed ity) -> do
+          unless (l1 == l2) $ throw $ TypeMismatchError (Typed t1') (Typed t2')
+          return (Array l1 ity loc)
+        Untyped -> throw $ TypeMismatchError (Typed t2') (Typed t1')
     go' (Bool loc) (Bool _) = return (Bool loc)
     go' t1' t2' = throw $ TypeMismatchError (Typed t2') (Typed t1')
 
-flipSignedness :: Typeness -> Typeness
-flipSignedness (Typed t) = Typed $ go t
+flipSign :: Typeness -> Typeness
+flipSign (Typed t) = Typed $ go t
   where
-    go (Signed l loc) =
-      Unsigned
+    go (Signed (Just l) loc) =
+      Unsigned (Just
         (if l > 2
            then l - 1
-           else l)
+           else l))
         loc
-    go (Unsigned l loc) = Signed (l + 1) loc
+    go (Unsigned (Just l) loc) = Signed (Just (l + 1)) loc
     go t1 = t1
-flipSignedness Untyped = Untyped
+flipSign Untyped = Untyped
 
 setTypeLoc :: Loc -> Typeness -> Typeness
 setTypeLoc _ Untyped     = Untyped
@@ -183,29 +234,45 @@ setTypeLoc loc (Typed t) = Typed (t { loc = SrcLoc loc } :: Type)
 -- | Check expression and update references as needed
 checkExpr :: (MonadRepr s m) => Expr -> m (Typeness, Expr)
 checkExpr p@PrimName {..} = do
-  ty' <- lookupTy name
+  ty' <- trackUsage Load name lookupTy
   return (ty', p { ty = ty' } :: Expr)
 checkExpr p@FunCall {..}  = (,p) <$> lookupTy name
 checkExpr p@PrimLit {..} =
   let t = typeOf lit
-
   in return (t, p {ty = t} :: Expr)
-checkExpr Binary {..}   = do
+checkExpr Binary {..} = do
   (t1, e1) <- checkExpr left
   (t2, e2) <- checkExpr right
   t' <- unifyTypes Nothing t1 t2
-  return (t', Binary t' binOp e1 e2 loc)
+  let retTy =
+        case binOp of
+          EqOp l  -> Typed (Bool l)
+          DisOp l -> Typed (Bool l)
+          ConOp l -> Typed (Bool l)
+          OrOp l  -> Typed (Bool l)
+          LtOp l  -> Typed (Bool l)
+          GtOp l  -> Typed (Bool l)
+          LeqOp l -> Typed (Bool l)
+          GeqOp l -> Typed (Bool l)
+          _       -> t'
+  return (retTy, Binary retTy binOp e1 e2 loc)
 checkExpr Unary {..} = do
-  (t', e') <- checkExpr expr
-  let t'' = flipSignedness t'
+  (t', e') <- checkExpr right
+  let t'' =
+        case unOp of
+          UnMinus _ -> flipSign t'
+          NotOp l   -> Typed (Bool l)
+          _         -> t'
   return (t'', Unary t'' unOp e' loc)
 
 -- | Check statements and update references as needed
 checkStm :: (MonadRepr s m) => Statement -> m Statement
 checkStm Assign {..} = do
-  destTy <- lookupTy dest
+  destTy <-
+    trace ("Looking up type for " ++ pprrString dest) $
+    trackUsage Store dest lookupTy
   (t, val') <- checkExpr val
-  _<- unifyTypes Nothing destTy t
+  _ <- unifyTypes Nothing destTy t
   return $ Assign dest val' loc
 checkStm If {..} = do
   (condTy, cond') <- checkExpr cond
@@ -222,14 +289,19 @@ checkStm If {..} = do
     Just stms -> Just <$> mapM checkStm stms
     Nothing   -> pure Nothing
   return $ If cond' body' elif' els' loc
-checkStm For {..} = do
+checkStm For {..}
   --varTy <- lookupTy var
   -- TODO: Bind variable in environment typed depending on ranges of expresions
-  (_fromTy, from') <- checkExpr from
-  -- TODO: Unless fromTy is int
-  (_toTy, to') <- checkExpr to
+ = do
+  (fromTy, from') <- checkExpr from
+    -- TODO: Unless fromTy is int
+  (toTy, to') <- checkExpr to
+  ty <- unifyTypes (Just (Unsigned (Just 1) noLoc)) fromTy toTy
   -- TODO: Unless toTy is into
-  body' <- mapM checkStm body
+  body' <-
+    withLocalEnv $ do
+      addDefinition var (mkVarDef var ty emptyExt)
+      mapM checkStm body
   return $ For var from' to' body' loc
 checkStm Switch {..} = do
   (_valTy, value') <- checkExpr value
@@ -284,7 +356,6 @@ checkDef b@BusDef {busDef = busDef} = do
              -- TODO: Check bus signal declared type against default value and range
              return bsig)
       return $ bd {signals = signals'}
-
 checkDef FunDef {..} = error "TODO: Function declarations unhandeled"
   -- TODO:
   -- do
@@ -304,15 +375,30 @@ checkDef i@InstDef {} =
 checkDef p@ParamDef {} =
   return p
 
-checkTopDef :: (MonadRepr Void m) => TopDef -> m ()
-checkTopDef ProcessTable { ..} = do
+-- | Generates warnings for every unused variable found in list of definitions
+warnUnused :: [DefType] -> TyM ()
+warnUnused = mapM_ go
+  where
+    go VarDef {varState = Unused, varName = name} = tell [UnusedVariable name]
+    go ConstDef {constState = Unused, constName = name} =
+      tell [UnusedVariable name]
+    -- TODO: Warn about unused buses as well
+    go _ = pure ()
+
+-- | Runs the type checked on a top-level definition
+checkTopDef :: TopDef -> TyM ()
+checkTopDef ProcessTable {stms = stms, procName = procName} = do
   updateDefsM_ procName checkDef
-  body' <- withScope procName $ mapM checkStm stms
+  body' <- withScope procName $ do
+    res <- mapM checkStm stms
+    symTab <- symTable <$> getCurEnv
+    warnUnused (M.elems symTab)
+    return res
   updateTopDef procName  (\x -> x { stms = body'} )
 checkTopDef NetworkTable {..} =
   updateTopDef netName id
-checkTopDef EmptyTable = return ()
 
+-- | Throws if passed a compound name
 ensureSingleRef :: (References a) => a -> Ident
 ensureSingleRef r = go $ refOf r
   where
@@ -321,20 +407,35 @@ ensureSingleRef r = go $ refOf r
       throw $
       InternalCompilerError "Compound names should not occur at this point"
 
+reduceRange :: (MonadRepr s m) => Range -> m (Integer, Integer)
+reduceRange Range {..} = (,) <$> exprReduceToInt lower <*> exprReduceToInt upper
+
 -- | Create an environment for a process by adding its definitions
-buildDeclTab :: (MonadRepr s m) => Ident -> [Declaration] -> m (M.HashMap String DefType)
+buildDeclTab ::
+     (MonadRepr s m) => Ident -> [Declaration] -> m (M.HashMap String DefType)
 buildDeclTab ctx = foldM go M.empty
   where
-    go m (VarDecl v@Variable {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (VarDef name v Unused Void) m
-    go m (ConstDecl c@Constant {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c Unused Void) m
-    go m (BusDecl b@Bus {..}) =
+    go m (VarDecl v@Variable {..}) = do
+      defaultVal <- case val of
+        Just e  -> exprReduceToLiteral e
+        Nothing -> pure $ LitInt 0 noLoc
       ensureUndef name m $
-      return $
-      M.insert (toString name) (BusDef name [ctx, name] (busToShape b) b Unassigned Void) m
+        return $ M.insert (toString name) (VarDef name v Unused defaultVal Void) m
+    go m (ConstDecl c@Constant {..}) = do
+      val' <- exprReduceToLiteral val
+      ensureUndef name m $
+        return $ M.insert (toString name) (ConstDef name c Unused val' Void) m
+    go m (BusDecl b@Bus {..}) = do
+      shape <- busToShape b
+      ensureUndef name m $
+        return $
+        M.insert
+        (toString name)
+        (BusDef name (ctx N.:| [name]) shape b Unassigned Shared Void)
+        m
     go m (FuncDecl f@Function {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (FunDef name f Void) m
+      ensureUndef name m $
+      return $ M.insert (toString name) (FunDef name f Void) m
     go m (EnumDecl e@Enumeration {..})
       -- Assign numbers to unnumbered enum fields in a similar fashion to C. If
       -- the first field f_0 is not assigned a value, it will be given the value
@@ -344,12 +445,23 @@ buildDeclTab ctx = foldM go M.empty
      = do
       enumFields <- fillEnum 0 fields
       let maxVal = maximum (map snd enumFields)
+      let minVal = minimum (map snd enumFields)
+      -- An enum is regular if its first (and minimum) value is 0 and its last
+      -- value is the maximum and the distance between every element is exactly
+      -- 1.
+      -- TODO: Handle single-element enums.
+      let isRegular =
+            minVal == 0 &&
+            all
+              (== 1)
+              (snd $
+               mapAccumR (\x y -> (y, x - y)) maxVal (init $ map snd enumFields))
       res <-
         ensureUndef name m $
         return $
         M.insert
           (toString name)
-          (EnumDef name enumFields (e {ty = typeOf maxVal}) Void)
+          (EnumDef name enumFields isRegular (e {ty = typeOf maxVal}) Void)
           m
       -- Insert fields of enum as entries into the entity symbol tab
       foldM
@@ -386,35 +498,49 @@ buildDeclTab ctx = foldM go M.empty
 buildProcTab :: (MonadRepr s m) => Process -> m TopDef
 buildProcTab p@Process {name = n, decls = d, body = body} = do
   tab <- buildDeclTab n d
-  return $ ProcessTable tab (nameOf p) M.empty body p Void
+  return $ ProcessTable tab (nameOf p) M.empty body M.empty p Void
 
 buildNetTab :: (MonadRepr s m) => Network -> m TopDef
 buildNetTab net@Network {name = n, netDecls = d} = do
   tab <- foldM go M.empty d
   return $ NetworkTable tab n M.empty net Void
   where
-    go m (NetConst c@Constant {..}) =
-      ensureUndef name m $ return $ M.insert (toString name) (ConstDef name c Unused Void) m
-    go m (NetBus b@Bus {..}) =
+    go m (NetConst c@Constant {..}) = do
+      val' <- exprReduceToLiteral val
       ensureUndef name m $
-      return $
-      M.insert (toString name) (BusDef name [n, name] (busToShape b) b Unassigned Void) m
+        return $ M.insert (toString name) (ConstDef name c Unused val' Void) m
+    go m (NetBus b@Bus {..}) = do
+      shape <- busToShape b
+      ensureUndef name m $
+        return $
+        M.insert
+          (toString name)
+          (BusDef name (n N.:| [name]) shape b Unassigned Shared Void)
+          m
     go m (NetInst i@Instance {..}) =
       let name
             -- Identifiers cannot start with _ so we have those names reserved
             -- for our private namespace. Prefix with __ to avoid clashing with
             -- names introduced by the import handler
+            -- TODO: More accurate location of anonymous name
            =
             fromMaybe
-              (Ident ("__anonymous_" <> pprr elName) noLoc)
+              (Ident ("__anonymous_" <> pprr elName) (SrcLoc $ locOf elName))
               instName
           isAnon = isNothing instName
-      in ensureUndef name m $
-         return $
-         M.insert
-           (toString name)
-           (InstDef name i (ensureSingleRef elName) [] isAnon Void)
-           m
+      in do pars <- mapM (exprReduceToName . snd) params
+            ensureUndef name m $
+              return $
+              M.insert
+                (toString name)
+                (InstDef
+                   name
+                   i
+                   (ensureSingleRef elName)
+                   (map refOf pars)
+                   isAnon
+                   Void)
+                m
          -- TODO: Maybe we can handle indexed instances by adding a separate
          -- DefType entry IndexedInstDef
     go _ NetGen {} = error "TODO: Generator declarations are unhandeled"
@@ -424,17 +550,28 @@ exprReduceToName :: (MonadRepr s m) => Expr -> m Name
 exprReduceToName PrimName {..} = return name
 exprReduceToName e             = throw $ ExprInvalidInContext e
 
+  -- | Reduce an expression to an integer and fail if impossible
 exprReduceToInt :: (MonadRepr s m) => Expr -> m Integer
 -- TODO: Run expression through simplifier attempting to evaluate it to a
 -- constant int
 exprReduceToInt (PrimLit _ (LitInt i _) _) = return i
 exprReduceToInt e                          = throw $ ExprInvalidInContext e
 
-busToShape :: Bus -> BusShape
-busToShape Bus {signals = signals} = BusShape $ map go signals
-  where
-    go BusSignal {..} = (name, ty)
+exprReduceToLiteral :: (MonadRepr s m) => Expr -> m Literal
+exprReduceToLiteral (PrimLit _ l _) = return l
+exprReduceToLiteral e               = throw $ ExprInvalidInContext e
 
+busToShape :: (MonadRepr s m ) => Bus -> m BusShape
+busToShape Bus {signals = signals} = BusShape <$> mapM go signals
+  where
+    go BusSignal {..} = do
+      val <- case value of
+        Just e  -> Just <$> exprReduceToLiteral e
+        Nothing -> pure Nothing
+      return (name, (ty, val))
+
+-- | Group a list of tuples by its first input. Turns [(a, b)] into (a, [b]) for
+-- running sequences of identical a's
 groupWithM ::
      (Monad m, Eq a)
   => (b -> b -> m b)
@@ -464,6 +601,8 @@ unifyProcParam (_, ps1) (inst, ps2) = do
       unless (t1 == t2) (throw $ BusShapeMismatch t1 t2 inst) >> return (i1, t1)
     go _ _ = throw $ InstanceParamTypeMismatch inst
 
+-- TODO: Set the param attribute of instances to something reasonable.
+
 -- | Infer the types of process parameters by checking how they are instantiated
 -- and normalize instance parameter list to a <name>: <value> format
 inferParamTypes ::
@@ -472,18 +611,22 @@ inferParamTypes ::
   -> m [(Ident, [(Ident, ParamType)])]
 inferParamTypes insts = do
   instTypes <-
-    forM insts (\(instCtxName, inst) -> (withScope instCtxName . go) inst)
+    forM
+      insts
+      (\(instCtxName, inst) -> (withScope instCtxName . go instCtxName) inst)
   params <- groupWithM unifyProcParam $ sortOn fst instTypes
   return $ map (\(i, (_, pars)) -> (i, pars)) params
   where
-    go i@Instance {elName = instantiated, params = formal} = do
+    go ctx i@Instance {elName = instantiated, params = actual} = do
       el <- lookupTopDef instantiated
-      let actual = getParams el
+      let formal = getParams el
           elName = nameOf el
       -- Add entity to the set of used entities
       -- TODO: This is a bit of hack. Unused entities should be filtered away by
       -- the set of used entities.
       addUsedEnt el
+      -- Also add instantiating entity
+      addUsedEnt ctx
       unless
         (length formal == length actual)
         (throw $ ParamCountMismatch (length actual) (length formal) i elName)
@@ -493,7 +636,8 @@ inferParamTypes insts = do
           (\Param {count = count, dir = forDir, name = forName} (ident, e)
             -- If name is unnamed, substitute matching name to normalize
             -- parameter listings. If name is specified, make sure that the name
-            -- used in the actual parameter matches the name of the formal parameter
+            -- used in the actual parameter matches the name of the formal
+            -- parameter
             -> do
              let actualName = fromMaybe forName ident
              unless (forName == actualName) $
@@ -503,23 +647,23 @@ inferParamTypes insts = do
                Const _ -> do
                  (_, eTy) <- checkExpr e
                  pure (forName, ConstPar (typeOf eTy))
-               In _ -> mkBusDef Input e forName count
-               Out _ -> mkBusDef Output e forName count)
-          actual
+               In _ -> mkBusDef Input e forName count instantiated
+               Out _ -> mkBusDef Output e forName count instantiated)
           formal
-    mkBusDef dir e forName count = do
+          actual
+    mkBusDef dir e forName count instantiated = do
       count' <-
         case count of
           Just (Just expr) -> exprReduceToInt expr >>= pure . Just
           _                -> pure Nothing
       bDef <- exprReduceToName e >>= lookupBus
-                -- Derive common shape of bus here
+      withScope instantiated $ setUsedBus (busRef bDef) (refOf forName, dir)
+      shape <- busToShape (busDef bDef)
       return
         ( forName
         , BusPar
           { ref = busRef bDef
-          , busShape = busToShape (busDef bDef) -- TODO: Get the global
-                       -- reference to a
+          , busShape = shape
           , busState = dir
           , array = count'
           })
@@ -529,7 +673,6 @@ inferParamTypes insts = do
       (params :: Process -> [Param]) procDef
     getParams NetworkTable {netDef = netDef} =
       (params :: Network -> [Param]) netDef
-    getParams EmptyTable = []
 
 -- | Populate typechecking environment with all functions defined.
 buildEnv :: DesignFile -> TyM ()
@@ -547,7 +690,6 @@ buildEnv df = do
         concatMap
           (\x ->
              case x of
-               EmptyTable -> []
                NetworkTable {..} ->
                  (netName, ) <$> (universeBi netDef :: [Instance])
                ProcessTable {..} ->
@@ -562,7 +704,6 @@ buildEnv df = do
            i
            (\x ->
               case x of
-                EmptyTable         -> EmptyTable
                 nt@NetworkTable {} -> nt {params = toMap t} :: TopDef
                 pc@ProcessTable {} -> pc {params = toMap t} :: TopDef)
          forM_
@@ -571,13 +712,14 @@ buildEnv df = do
               trace
                 ("Added definition " ++
                  show i ++ " " ++ show n ++ " " ++ show param)
-                addDefinition
+                addDefinition'
                 i
                 n
                 (ParamDef n param Void)))
   forUsedTopDefsM_ checkTopDef
   where
     toMap els = M.fromList (map (first toString) els)
+
 
 -- | Do typechecking of an environment. Return DesignFile with completed type
 -- annoations

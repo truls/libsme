@@ -53,7 +53,6 @@ import           Data.Hashable
 import qualified Data.List.NonEmpty              as N
 import           Data.Loc
 import           Data.Maybe                      (fromMaybe)
-import           Data.Semigroup
 import qualified Data.Text                       as T
 import           Text.PrettyPrint.Mainland       hiding ((<>))
 import           Text.PrettyPrint.Mainland.Class
@@ -71,11 +70,17 @@ class Nameable a where
 
 type Ref = N.NonEmpty Ident
 
+-- instance Located Ref where
+--   locOf (
+
 instance Pretty Ref where
   ppr r = cat $ punctuate dot (map (\(Ident i _) -> ppr i) (N.toList r))
 
 class References a where
   refOf :: a -> Ref
+
+instance References Ref where
+  refOf r = r
 
 data Typeness
   = Typed Type
@@ -131,7 +136,10 @@ instance Located Import where
 
 -- | Instantiates either loc "Process" or loc "Network"
 data Instance = Instance
-  { instName  :: Maybe Ident -- ^ The name of the instance
+  {
+    instName  :: Maybe Ident -- ^ The name of the instance
+    -- TODO: Change to this:
+    --instName  :: (Maybe Ident, SrcLoc) -- ^ The name of the instance
   , instIndex :: Maybe Expr
   , elName    :: Name -- ^ The name of the object to initialize
   , params    :: [(Maybe Ident, Expr)] -- ^ Optionally named parameters of the object
@@ -310,6 +318,10 @@ instance Located Function where
 instance Nameable Function where
   nameOf Function {..} = name
 
+-- data AssinOp =
+--   AssignId
+--   | AssignAdd | AssignSub | AssignMinus |
+
 data Statement
   = Assign { dest :: Name
           ,  val  :: Expr
@@ -376,10 +388,10 @@ data Expr
            , left  :: Expr
            , right :: Expr
            , loc   :: SrcLoc }
-  | Unary { ty   :: Typeness
-          , unOp :: UnOp
-          , expr :: Expr
-          , loc  :: SrcLoc }
+  | Unary { ty    :: Typeness
+          , unOp  :: UnOp
+          , right :: Expr
+          , loc   :: SrcLoc }
   | PrimLit { ty  :: Typeness
             , lit :: Literal
             , loc :: SrcLoc }
@@ -407,52 +419,62 @@ instance Located Expr where
   locOf FunCall {..}  = locOf loc
 
 data BinOp
-  = PlusOp { loc :: SrcLoc}
+  =
+    -- Arithmetic operators
+    DivOp   { loc :: SrcLoc}
   | MinusOp { loc :: SrcLoc}
-  | MulOp { loc :: SrcLoc}
-  | DivOp { loc :: SrcLoc}
-  | ModOp { loc :: SrcLoc}
-  | EqOp { loc :: SrcLoc}
-  | NeqOp { loc :: SrcLoc}
-  | SllOp { loc :: SrcLoc}
-  | SrlOp { loc :: SrcLoc}
-  | LtOp { loc :: SrcLoc}
-  | GtOp { loc :: SrcLoc}
-  | LeqOp { loc :: SrcLoc}
-  | GeqOp { loc :: SrcLoc}
-  | AndOp { loc :: SrcLoc}
-  | OrOp { loc :: SrcLoc}
-  | XorOp { loc :: SrcLoc}
+  | ModOp   { loc :: SrcLoc}
+  | MulOp   { loc :: SrcLoc}
+  | PlusOp  { loc :: SrcLoc}
+  -- Bitwise operators
+  | AndOp   { loc :: SrcLoc}
+  | OrOp    { loc :: SrcLoc}
+  | SllOp   { loc :: SrcLoc}
+  | SrlOp   { loc :: SrcLoc}
+  | XorOp   { loc :: SrcLoc}
+  -- Booelan operators
+  | ConOp   { loc :: SrcLoc} -- Conjunction
+  | EqOp    { loc :: SrcLoc}
+  | DisOp   { loc :: SrcLoc} -- Disjunction
+  | GeqOp   { loc :: SrcLoc}
+  | GtOp    { loc :: SrcLoc}
+  | LeqOp   { loc :: SrcLoc}
+  | LtOp    { loc :: SrcLoc}
+  | NeqOp   { loc :: SrcLoc}
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance Located BinOp where
-  locOf PlusOp {..}  = locOf loc
+  locOf AndOp   {..} = locOf loc
+  locOf ConOp   {..} = locOf loc
+  locOf DivOp   {..} = locOf loc
+  locOf EqOp    {..} = locOf loc
+  locOf DisOp   {..} = locOf loc
+  locOf GeqOp   {..} = locOf loc
+  locOf GtOp    {..} = locOf loc
+  locOf LeqOp   {..} = locOf loc
+  locOf LtOp    {..} = locOf loc
   locOf MinusOp {..} = locOf loc
-  locOf MulOp {..}   = locOf loc
-  locOf DivOp {..}   = locOf loc
-  locOf ModOp {..}   = locOf loc
-  locOf EqOp {..}    = locOf loc
-  locOf NeqOp {..}   = locOf loc
-  locOf SllOp {..}   = locOf loc
-  locOf SrlOp {..}   = locOf loc
-  locOf LtOp {..}    = locOf loc
-  locOf GtOp {..}    = locOf loc
-  locOf LeqOp {..}   = locOf loc
-  locOf GeqOp {..}   = locOf loc
-  locOf AndOp {..}   = locOf loc
-  locOf OrOp {..}    = locOf loc
-  locOf XorOp {..}   = locOf loc
+  locOf ModOp   {..} = locOf loc
+  locOf MulOp   {..} = locOf loc
+  locOf NeqOp   {..} = locOf loc
+  locOf OrOp    {..} = locOf loc
+  locOf PlusOp  {..} = locOf loc
+  locOf SllOp   {..} = locOf loc
+  locOf SrlOp   {..} = locOf loc
+  locOf XorOp   {..} = locOf loc
 
 data UnOp
   = UnPlus { loc :: SrcLoc }
   | UnMinus { loc :: SrcLoc }
   | NotOp { loc :: SrcLoc }
+  | NegOp { loc :: SrcLoc}
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance Located UnOp where
-  locOf UnPlus {..}  = locOf loc
+  locOf UnPlus  {..} = locOf loc
   locOf UnMinus {..} = locOf loc
-  locOf NotOp {..}   = locOf loc
+  locOf NotOp   {..} = locOf loc
+  locOf NegOp   {..} = locOf loc
 
 data Name
   = Name { base  :: NamePart
@@ -489,9 +511,9 @@ data ArrayIndex
   deriving (Eq, Ord, Show, Data, Typeable)
 
 data Type
-  = Signed { size :: Integer
+  = Signed { size :: Maybe Integer
            , loc  :: SrcLoc }
-  | Unsigned { size :: Integer
+  | Unsigned { size :: Maybe Integer
              , loc  :: SrcLoc }
   | Single { loc :: SrcLoc }
   | Double { loc :: SrcLoc }
@@ -544,10 +566,14 @@ bitSize = (+ 1) . (floor :: Double -> a) . logBase 2 . fromIntegral . abs
 
 instance Typed Literal where
   typeOf LitInt {..}
-    | intVal < 0 = let res = Typed $ Signed (bitSize intVal) loc in
-                     trace ("Typeof for " ++ show intVal ++ " yielded " ++ show res) res
-    | otherwise = let res = Typed $ Unsigned (bitSize intVal) loc in
-                    trace ("Typeof for " ++ show intVal ++ " yielded " ++ show res) res
+    | intVal < 0 =
+      let res = Typed $ Signed (Just (bitSize intVal)) loc
+      in trace ("Typeof for " ++ show intVal ++ " yielded " ++ show res) res
+    | intVal == 0 =
+      Typed $ Unsigned (Just 1) loc
+    | otherwise =
+      let res = Typed $ Unsigned (Just (bitSize intVal)) loc
+      in trace ("Typeof for " ++ show intVal ++ " yielded " ++ show res) res
   typeOf LitFloat {..} = Typed $ Single loc
   typeOf LitString {..} = Typed $ String loc
   -- TODO: Do better! This requires a pre-processing step simplifying the
@@ -555,14 +581,15 @@ instance Typed Literal where
   typeOf LitArray {..} =
     Typed $
     Array
-      (Just (PrimLit Untyped (LitInt (fromIntegral $ length arrayVal) noLoc) noLoc))
+      (Just
+         (PrimLit Untyped (LitInt (fromIntegral $ length arrayVal) noLoc) noLoc))
       arrTy
       loc
     where
       arrTy
         | minimum arrayVal < 0 =
-          Signed (bitSize $ maximum (map abs arrayVal)) loc
-        | otherwise = Unsigned (bitSize $ maximum arrayVal) loc
+          Signed (Just (bitSize $ maximum (map abs arrayVal))) loc
+        | otherwise = Unsigned (Just (bitSize $ maximum arrayVal)) loc
   typeOf LitTrue {..} = Typed $ Bool loc
   typeOf LitFalse {..} = Typed $ Bool loc
 
@@ -598,8 +625,8 @@ instance Nameable Ident where
 -- Instances for standard number types
 instance {-# OVERLAPPABLE #-} (Integral a) => Typed a where
   typeOf intVal
-    | intVal < 0 = Typed $ Signed (fromIntegral $ bitSize intVal) noLoc
-    | otherwise = Typed $ Unsigned (fromIntegral $ bitSize intVal) noLoc
+    | intVal < 0 = Typed $ Signed (Just (fromIntegral $ bitSize intVal)) noLoc
+    | otherwise = Typed $ Unsigned (Just (fromIntegral $ bitSize intVal)) noLoc
 
 instance Typed Double where
   typeOf _ = Typed $ Double noLoc
