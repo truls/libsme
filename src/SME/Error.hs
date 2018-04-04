@@ -135,11 +135,6 @@ instance Show TypeCheckErrors where
     pprrString def ++
     " referenced as value at " ++
     displayLoc (locOf def) ++ ". Maybe you meant to access one of its channels?"
-  show (BusReferencedAsValue def) =
-    "Bus " ++
-    pprrString def ++
-    " referenced as value at " ++
-    displayLoc (locOf def) ++ ". Maybe you meant to access one of its channels?"
   show (WroteInputBus def) = "Cannot write to input bus " ++ pprrString def ++ " at " ++ displayLoc (locOf def)
   show (WroteConstant def) = "Cannot write to read-only constant " ++ pprrString def ++ " at " ++ displayLoc (locOf def)
   show (ReadOutputBus def) = "Cannot read from output bus " ++ pprrString def ++ " at " ++ displayLoc (locOf def)

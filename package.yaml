@@ -25,6 +25,14 @@ ghc-options:
   - -Wnoncanonical-monadfail-instances
   - -O0
 
+cc-options:
+  - -g
+  - -Wall
+  - -pedantic
+
+include-dirs: cbits
+c-sources: cbits/api.c
+
 dependencies:
   - base >= 4.7 && < 5
   - language-vhdl-quote
@@ -35,12 +43,12 @@ dependencies:
   - mtl >= 2.2.1
   - uniplate >= 1.6.12
   - pretty-show >= 1.6.13
-  # Reenable and delete local copy once Semigroup instances have been added
-  #- mainland-pretty >= 0.6.1
   - megaparsec >= 6.3.0
   - bimap >= 0.3.3
-  # Reenable once Semigroup instances have been added
-  #- srcloc >= 0.5.1.1
+  # Remove from stack.yaml once in stackage
+  - mainland-pretty >= 0.7
+  # Remove from stack.yaml once in stackage
+  - srcloc >= 0.5.1.2
   - exceptions >= 0.8.3
   - hashable >= 1.2.6.1
   - extra >= 1.6.3
@@ -49,6 +57,9 @@ dependencies:
   - template-haskell >= 2.12.0.0
   - makefile >= 1.1.0.0
   - fgl >= 5.6.0.0
+  - cassava >= 0.5.1.0
+  - async >= 2.2.1
+  - integer-gmp >= 1.0.1.0
   # - file-embed >= 0.0.10.1
   #- aeson >= 1.2.3.0
   #- bytestring >= 0.10.8.1

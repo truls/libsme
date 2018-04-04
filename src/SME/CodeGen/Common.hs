@@ -17,7 +17,6 @@ import           Control.Monad.Identity (Identity)
 import           Control.Monad.State    (MonadState)
 import qualified Data.Text              as T
 
-import           Language.SMEIL.Pretty
 import           SME.Error
 import           SME.Representation
 

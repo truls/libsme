@@ -104,7 +104,6 @@ genExpr Unary {..} = do
     genUnOp (UnPlus _) e  = [expr|+$expr:e|]
     genUnOp (UnMinus _) e = [expr|-$expr:e|]
     genUnOp (NotOp _) e   = [expr|not $expr:e|]
-    genUnOp (NegOp _) e   = [expr|(0 - ($expr:e))|]
 
 genExpr PrimName {name = n} = do
   n' <- genName n
@@ -188,12 +187,15 @@ genStm Barrier {} =
 genGenerics :: TopDef -> [V.InterfaceDeclaration]
 genGenerics p =
   mapMaybe
-    (\case
         -- FIMXE: We should probably generate VHDL native types here
         -- (i.e. integer)
-       (x, ConstPar t) -> Just [ifacedecl|$ident:x : $subtyind:(genBuiltinType t)|]
+    (\case
+       (x, ConstPar t) ->
+         let x' = toString x -- FIXME: This is silly
+         in Just [ifacedecl|$ident:(x') : $subtyind:(genBuiltinType t)|]
        _ -> Nothing)
-    (M.toList ((params :: TopDef -> M.HashMap String ParamType) p))
+    ((params :: TopDef -> ParamList) p)
+    --(M.toList ((params :: TopDef -> M.HashMap String ParamType) p))
 
 -- toSignalName :: Ident -> Ident -> String
 -- toSignalName i BusSignal {..} = toString i ++ "_" ++ toString name

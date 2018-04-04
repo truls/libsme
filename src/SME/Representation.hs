@@ -5,7 +5,6 @@
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE TypeApplications           #-}
 
 -- | Internal representation of an SMEIL program and functions for manipulating
 -- it.
@@ -23,6 +22,9 @@ module SME.Representation
   , Void(..)
   , Extension(..)
   , BusVisibility(..)
+  , Value (..)
+  , BaseSymTab
+  , ParamList
   , ensureUndef
   , mkEnv
   , runReprM
@@ -92,6 +94,9 @@ class ( Monad m
     (_, res) <- lookupDef' r
     return res
   {-# INLINEABLE lookupDef #-}
+  -- | Looks up a reference returning in a tuple the last part of the reference
+  -- (if any) that was not use din looking up the definition, and the definition
+  -- that was found.
   lookupDef' :: (References a) => a -> m ([Ident], BaseDefType s)
   lookupDef' r = do
     ti <- curEnvIdent
@@ -142,6 +147,7 @@ class ( Monad m
           Nothing ->
             trace "lookup recursing2" $ withScope i (go (N.fromList is))
   {-# INLINEABLE lookupDef' #-}
+  -- | Looks up a top-level definition
   lookupTopDef :: (References a, Located a, Pretty a) => a -> m (BaseTopDef s)
   lookupTopDef i =
     go $ trace ("lookupTopDef called with " ++ show (refOf i)) (refOf i)
@@ -157,6 +163,8 @@ class ( Monad m
         -- non-existing entity
        = trace "lookupTopDef" $ throw $ UndefinedName i
   --{-# INLINEABLE lookupTopdef #-}
+  -- | Updates a top-level definition 'i', by applying a function 'f' to its
+  -- top-level definition.
   updateTopDef ::
        (References a, Located a, Pretty a)
     => a
@@ -165,7 +173,9 @@ class ( Monad m
   updateTopDef i f = do
     def <- lookupTopDef i
     modify (\x -> x {defs = M.insert (toString (nameOf def)) (f def) (defs x)})
-  --{-# INLINEABLE updateTopdef #-}
+  {-# INLINE updateTopDef #-}
+  -- | Updates all definitions within the top-level definition 'd', by applying
+  -- the function 'f'
   updateDefsM_ ::
        (References a, Located a, Pretty a)
     => a
@@ -190,10 +200,10 @@ class ( Monad m
     let tab = symTable def
         defs = M.elems tab
     mapM f defs
-  forUsedTopDefsM_ :: (BaseTopDef s -> m ()) -> m ()
+  mapUsedTopDefsM_ :: (BaseTopDef s -> m ()) -> m ()
   -- FIXME: The "used" here is probably a bug as unused top-level entities
   -- should be filtered away by
-  forUsedTopDefsM_ f = void $ mapUsedTopDefsM f
+  mapUsedTopDefsM_ f = void $ mapUsedTopDefsM f
   mapUsedTopDefsM :: (BaseTopDef s -> m a) -> m [a]
   mapUsedTopDefsM f = do
     u <- gets used
@@ -321,19 +331,63 @@ instance Extension Void where
 data Void = Void
   deriving Show
 
--- | Type for representing a value in SMEIL
+-- data Value
+--   = IntVal Type
+--            Integer
+--   | ArrayVal Type
+--              Integer
+--              [Value]
+--   | BoolVal Bool
+--   | DoubleVal Type
+--               Double
+--   | SingleVal Type
+--               Float
+--   deriving (Show)
+
 data Value
-  = IntVal Type
-           Integer
-  | ArrayVal Type
-             Integer
+  = IntVal Integer
+  | ArrayVal Int
              [Value]
   | BoolVal Bool
-  | DoubleVal Type
-              Double
-  | SingleVal Type
-              Float
-  deriving (Show)
+  | DoubleVal Double
+  | SingleVal Float
+  deriving (Show, Eq)
+
+
+
+instance Ord Value
+  -- This instance is "bad" as it make an effort to implement a notion of
+  -- type-unsafe and somewhat arbitrary comparisons between SMEIL
+  -- values. However, should comparisons between values of different types ever
+  -- happen, it should be considered a type-checker bug.
+                                                         where
+  (IntVal a) `compare` (IntVal b) = a `compare` b
+  (IntVal a) `compare` (BoolVal False) = a `compare` 0
+  (IntVal a) `compare` (BoolVal True) = a `compare` 1
+  (IntVal a) `compare` (SingleVal b) = fromIntegral a `compare` b
+  (IntVal a) `compare` (DoubleVal b) = fromIntegral a `compare` b
+  a@(BoolVal True) `compare` b =
+    case b `compare` a of
+      LT -> GT
+      GT -> LT
+      EQ -> EQ
+  a@(BoolVal False) `compare` b =
+    case b `compare` a of
+      LT -> GT
+      GT -> LT
+      EQ -> EQ
+  (DoubleVal a) `compare` (DoubleVal b) = a `compare` b
+  (DoubleVal a) `compare` (IntVal b) = a `compare` fromIntegral b
+  (DoubleVal a) `compare` (BoolVal False) = a `compare` 1
+  (DoubleVal a) `compare` (BoolVal True) = a `compare` 0
+  DoubleVal {} `compare` SingleVal {} = GT -- TODO
+  (SingleVal a) `compare` (SingleVal b) = a `compare` b
+  (SingleVal a) `compare` (IntVal b) = a `compare` fromIntegral b
+  (SingleVal a) `compare` (BoolVal False) = a `compare` 1
+  (SingleVal a) `compare` (BoolVal True) = a `compare` 0
+  (SingleVal _) `compare` (DoubleVal _) = LT -- TODO
+  (ArrayVal _ a) `compare` b = maximum a `compare` b
+  a `compare` (ArrayVal _ b) = a `compare` maximum b
 
 mkVarDef :: Ident -> Typeness -> a -> BaseDefType a
 mkVarDef i t el =
@@ -351,6 +405,7 @@ data BaseDefType a
   = VarDef { varName  :: Ident
            , varDef   :: Variable
            , varState :: VarState
+           --, varVa
            , varVal   :: Literal
            -- , varRange :: (Integer, Integer)
            , ext      :: a }
@@ -359,18 +414,19 @@ data BaseDefType a
              , constState :: VarState
              , constVal   :: Literal
              , ext        :: a }
-  | BusDef { busName  :: Ident
-           , busRef   :: Ref
-           , busShape :: BusShape
-           , busDef   :: Bus
-           , busState :: BusState
-           , shared   :: BusVisibility -- ^ Property indicating if a bus is used for
+  | BusDef { busName   :: Ident
+           , busRef    :: Ref
+           , busShape  :: BusShape
+           , busDef    :: Bus
+           , busState  :: BusState
+           , shared    :: BusVisibility -- ^ Property indicating if a bus is used for
                          -- communicating outside of an instance. Starts
                          -- out as true. Flips to false if a bus is read
                          -- from and written to in the same
                          -- cycle. Accessing a bus with shared = false from
                          -- outside the process where it is declared is an error
-           , ext      :: a }
+           , isExposed :: Bool
+           , ext       :: a }
   | FunDef { funcName :: Ident
            , funcDef  :: Function
            , ext      :: a }
@@ -386,7 +442,7 @@ data BaseDefType a
   | InstDef { instName     :: Ident
             , instDef      :: Instance
             , instantiated :: Ident
-            , params       :: [Ref]
+            --, params       :: [Ref]
             , anonymous    :: Bool
             , ext          :: a
               -- Also track: Parameters
@@ -420,8 +476,9 @@ instance Nameable (BaseDefType a) where
   nameOf InstDef {..}      = instName
   nameOf ParamDef {..}     = paramName
 
-newtype BusShape = BusShape [(Ident, (Typeness, Maybe Literal))]
-  deriving (Eq, Show)
+newtype BusShape = BusShape
+  { unBusShape :: [(Ident, (Typeness, Maybe Literal))]
+  } deriving (Eq, Show)
 
 --type BusShape = M.HashMap Ident (Typeness, Maybe Expr)
 
@@ -433,6 +490,7 @@ data InstParam =
 data ParamType
   = ConstPar Typeness
   | BusPar { ref      :: Ref
+           , localRef :: Ref
            , busShape :: BusShape
            , busState :: BusState
            , array    :: Maybe Integer}
@@ -455,21 +513,25 @@ data VarState
   | Unused
   deriving (Eq, Show)
 
+type BaseSymTab a = M.HashMap String (BaseDefType a)
+type ParamList = [(Ident, ParamType)]
+
 data BaseTopDef a
-  = ProcessTable { symTable  :: M.HashMap String (BaseDefType a)
+  = ProcessTable { symTable  :: BaseSymTab a
                  , procName  :: Ident
                  -- FIXME: Consider removing params since the info already
                  -- exists in the symtable
-                 , params    :: M.HashMap String ParamType
+                 , params    :: ParamList
+                 --, params    :: M.HashMap Ident ParamType
                  , stms      :: [Statement]
                    --, usedBuses :: M.HashMap Ref (S.Set (Maybe Ident, BusState))
                  , usedBuses :: M.HashMap Ref (S.Set (Ref, BusState))
                  --, referencedProcs ::
                  , procDef   :: Process
                  , ext       :: a }
-  | NetworkTable { symTable :: M.HashMap String (BaseDefType a)
+  | NetworkTable { symTable :: BaseSymTab a
                  , netName  :: Ident
-                 , params   :: M.HashMap String ParamType
+                 , params   :: ParamList
                  , netDef   :: Network
                  , ext      :: a }
   deriving (Show)

@@ -11,8 +11,6 @@ module SME.ImportResolver
   , RenameState
   ) where
 
-import           Prelude                     hiding (span)
-
 import           Control.Arrow               (first)
 import           Control.Exception           (throw)
 import           Control.Monad               (unless)
@@ -49,16 +47,23 @@ mkRenameState = RenameState {nameMap = B.empty, nameSource = 0}
 -- | Reader monad uesd for tracing import history
 type PaM m = StateT RenameState m
 
-newtype Module = Module (String, [String], DesignFile, [Module])
+newtype Module =
+  Module (String, [String], DesignFile, [Module])
   deriving (Show)
 
 data ModuleCtx = ModuleCtx
-  { moduleName           :: Ref -- | The name that the module is imported as
-  , importedNames        :: [Ident] -- | Specific names imported from module
-  , parentNames          :: [Ref] -- | Names defined in parent modules
-  , stmLocation          :: SrcLoc -- | Location of import statement
-  , parentImportPrefixes :: [Ref] -- | Names imported from parent will be prefixed with
-  , modulePath           :: FilePath -- | Path of module
+  { moduleName           :: Ref
+  -- ^ The name that the module is imported as
+  , importedNames        :: [Ident]
+  -- ^ Specific names imported from module
+  , parentNames          :: [Ref]
+  -- ^ Names defined in parent modules
+  , stmLocation          :: SrcLoc
+  -- ^ Location of import statement
+  , parentImportPrefixes :: [Ref]
+  -- ^ Names imported from parent will be prefixed with
+  , modulePath           :: FilePath
+  -- ^ Path of module
   }
 
 mkModuleCtx :: ModuleCtx
@@ -216,7 +221,8 @@ lookupPrefix = go . reverse . N.toList
         Just r -> return $ Just (length xs + 1, r)
         Nothing -> go xs
 
--- | Transform top-level names and add maps, tracking the transformed names in a map
+-- | Transform top-level names and add maps, tracking the transformed names in a
+-- map
 renameModule ::
      (MonadThrow m, MonadIO m) => Ref -> Bool -> DesignFile -> PaM m DesignFile
 renameModule n asSpecific f =
@@ -316,6 +322,8 @@ parseModule ModuleCtx {..} = do
       in unless (null a) $
          throw $ IdentifierClashError (map nameOf (getFirstNames a)) stmLocation
 
+-- | Resolves all imports and inlines them returning a "flat" SMEIL
+-- program. Imported entities are inlined as appropriate
 resolveImports ::
      (MonadThrow m, MonadIO m) => FilePath -> m (DesignFile, M.Map String Ref)
 resolveImports fp = do

@@ -1,4 +1,3 @@
-{-# LANGUAGE UndecidableInstances  #-}
 -- | This module defines the syntax for the SME intermediate
 -- representation. For details, see: TODO/langspec.pdf
 
@@ -8,6 +7,7 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE UndecidableInstances  #-}
 
 module Language.SMEIL.Syntax
   ( DesignFile(..)
@@ -49,13 +49,14 @@ module Language.SMEIL.Syntax
   ) where
 
 import           Data.Data                       (Data, Typeable)
-import           Data.Hashable
+import           Data.Hashable                   (Hashable (hashWithSalt))
 import qualified Data.List.NonEmpty              as N
-import           Data.Loc
+import           Data.Loc                        (Located (locOf), SrcLoc,
+                                                  noLoc)
 import           Data.Maybe                      (fromMaybe)
 import qualified Data.Text                       as T
-import           Text.PrettyPrint.Mainland       hiding ((<>))
-import           Text.PrettyPrint.Mainland.Class
+import           Text.PrettyPrint.Mainland       (cat, dot, punctuate)
+import           Text.PrettyPrint.Mainland.Class (Pretty (ppr))
 
 --import           Debug.Trace                     (trace)
 trace :: String -> b -> b
@@ -194,10 +195,14 @@ data NetworkDecl
   deriving (Eq, Ord, Show, Data, Typeable)
 
 data Bus = Bus
-  { exposed :: Bool -- ^Bus is exposed on top level
-  , unique  :: Bool -- ^Bus is unique, i.e., not duplicated on process instantiation
-  , name    :: Ident -- ^Name of bus
-  , signals :: [BusSignal] -- ^Bus signals
+  { exposed :: Bool
+  -- ^Bus is exposed on top level
+  , unique  :: Bool
+  -- ^Bus is unique, i.e., not duplicated on process instantiation
+  , name    :: Ident
+  -- ^Name of bus
+  , signals :: [BusSignal]
+  -- ^Bus signals
   , loc     :: SrcLoc
   } deriving (Eq, Ord, Show, Data, Typeable)
 
@@ -467,14 +472,12 @@ data UnOp
   = UnPlus { loc :: SrcLoc }
   | UnMinus { loc :: SrcLoc }
   | NotOp { loc :: SrcLoc }
-  | NegOp { loc :: SrcLoc}
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance Located UnOp where
   locOf UnPlus  {..} = locOf loc
   locOf UnMinus {..} = locOf loc
   locOf NotOp   {..} = locOf loc
-  locOf NegOp   {..} = locOf loc
 
 data Name
   = Name { base  :: NamePart
@@ -621,6 +624,9 @@ instance Hashable Ident where
 
 instance Nameable Ident where
   nameOf = id
+
+instance Semigroup Ident where
+  (Ident a loca) <> (Ident b locb) = Ident (a <> b) (loca <> locb)
 
 -- Instances for standard number types
 instance {-# OVERLAPPABLE #-} (Integral a) => Typed a where

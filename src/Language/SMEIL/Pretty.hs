@@ -12,7 +12,7 @@ import           Data.List.NonEmpty              (toList)
 import qualified Data.Text                       as T
 import           Data.Text.Lazy                  (toStrict)
 import           Text.PrettyPrint.Mainland
-import           Text.PrettyPrint.Mainland.Class
+import           Text.PrettyPrint.Mainland.Class (Pretty (ppr))
 
 instance Pretty DesignFile where
   ppr (DesignFile du _) = stack $ map ppr du
@@ -197,6 +197,8 @@ instance Pretty BinOp where
   ppr (MinusOp _) = text "-"
   ppr (MulOp _)   = text "*"
   ppr (DivOp _)   = text "/"
+  ppr (DisOp _)   = text "&&"
+  ppr (ConOp _)   = text "||"
   ppr (ModOp _)   = text "%"
   ppr (EqOp _)    = text "=="
   ppr (NeqOp _)   = text "!="

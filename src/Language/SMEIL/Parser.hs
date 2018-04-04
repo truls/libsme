@@ -4,7 +4,7 @@ module Language.SMEIL.Parser
   ) where
 
 
-import           Control.Monad.State.Lazy
+import           Control.Monad.State         (runStateT)
 import qualified Data.Text                   as T
 import qualified Text.Megaparsec             as P
 

@@ -40,7 +40,10 @@ data Config = Config
                         -- strictly enforced
   , inferSizeBounds  :: Bool -- ^ Infer and adjust type bounds during type
                             -- checking
-  , warnings         :: Bool -- ^ Enable warnings
+  , emulateOverflows :: Bool
+  , warnings         :: Bool -- ^ Are warnings enabled
+  , params           :: [String] -- [(String, [(String, String)])]
+  -- ^ Entity parameters supplied as command line options.
   }
 
 dumpStage :: Config -> Stages -> Bool

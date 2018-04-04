@@ -4,7 +4,7 @@ module Language.SMEIL.Parser.Impl where
 
 import           Control.Monad               (void)
 import           Data.List.NonEmpty          (NonEmpty ((:|)))
-import           Data.Loc
+import           Data.Loc                    (SrcLoc)
 import           Data.Maybe                  (fromMaybe, isJust)
 import qualified Data.Text                   as T
 
@@ -260,7 +260,6 @@ table =
   in [ [ prefix "+" unary S.UnPlus
        , prefix "-" unary S.UnMinus
        , prefix "!" unary S.NotOp
-       , prefix "~" unary S.NegOp
        ]
      , [binary "*" bin S.MulOp, binary "/" bin S.DivOp, binary "%" bin S.ModOp]
      , [binary "+" bin S.PlusOp, binary "-" bin S.MinusOp]
