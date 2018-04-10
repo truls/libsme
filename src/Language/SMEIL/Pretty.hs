@@ -229,13 +229,15 @@ instance Pretty ArrayIndex where
   ppr (Index i) = ppr i
 
 instance Pretty Type where
-  ppr (Signed s _)   = text "i" <> ppr s
-  ppr (Unsigned s _) = text "u" <> ppr s
-  ppr (Single _)     = text "f32"
-  ppr (Double _)     = text "f64"
-  ppr (Bool _)       = text "bool"
-  ppr (String _)=    text "string"
-  ppr (Array l t _)  = brackets (ppr l) <> ppr t
+  ppr (Signed (Just s) _)   = text "i" <> ppr s
+  ppr (Signed Nothing _)    = text "int"
+  ppr (Unsigned (Just s) _) = text "u" <> ppr s
+  ppr (Unsigned Nothing _)  = text "uint"
+  ppr (Single _)            = text "f32"
+  ppr (Double _)            = text "f64"
+  ppr (Bool _)              = text "bool"
+  ppr (String _)=           text "string"
+  ppr (Array l t _)         = brackets (ppr l) <> ppr t
 
 instance Pretty Literal where
   ppr (LitInt i _)    = integer i
