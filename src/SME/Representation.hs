@@ -34,6 +34,7 @@ module SME.Representation
   , isBus
   , mkVarDef
   , lookupEx
+  , absValue
   ) where
 
 import           Control.Exception      (throw)
@@ -334,29 +335,14 @@ instance Extension Void where
 data Void = Void
   deriving Show
 
--- data Value
---   = IntVal Type
---            Integer
---   | ArrayVal Type
---              Integer
---              [Value]
---   | BoolVal Bool
---   | DoubleVal Type
---               Double
---   | SingleVal Type
---               Float
---   deriving (Show)
-
 data Value
-  = IntVal Integer
-  | ArrayVal Int
-             [Value]
-  | BoolVal Bool
-  | DoubleVal Double
-  | SingleVal Float
+  = IntVal !Integer
+  | ArrayVal !Int
+             (Vector Value)
+  | BoolVal !Bool
+  | DoubleVal !Double
+  | SingleVal !Float
   deriving (Show, Eq)
-
-
 
 instance Ord Value
   -- This instance is "bad" as it make an effort to implement a notion of
@@ -392,6 +378,14 @@ instance Ord Value
   (ArrayVal _ a) `compare` b = maximum a `compare` b
   a `compare` (ArrayVal _ b) = a `compare` maximum b
 
+-- | For values that are instance of Num, runs abs on the value. Returns the
+-- identity otherwise
+absValue :: Value -> Value
+absValue (IntVal v)    = IntVal $ abs v
+absValue (DoubleVal v) = DoubleVal $ abs v
+absValue (SingleVal v) = SingleVal $ abs v
+absValue v             = v
+
 mkVarDef :: Ident -> Typeness -> a -> BaseDefType a
 mkVarDef i t el =
   VarDef
@@ -418,7 +412,7 @@ data BaseDefType a
              , constVal   :: Literal
              , ext        :: a }
   | BusDef { busName   :: Ident
-           , busRef    :: Ref
+           , busRef    :: Ref -- ^ The global reference to the bus declaration
            , busShape  :: BusShape
            , busDef    :: Bus
            , busState  :: BusState

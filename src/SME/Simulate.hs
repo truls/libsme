@@ -22,13 +22,13 @@ module SME.Simulate
   ) where
 
 import           Control.Exception                 (throw)
-import           Control.Monad                     (foldM, forM, forM_,
-                                                    mapAndUnzipM, mapM_,
+import           Control.Monad                     (foldM, forM_, mapM_,
                                                     replicateM, unless, void,
                                                     when, zipWithM)
 import           Data.Bits                         (complement, shiftL, shiftR,
                                                     xor, (.&.), (.|.))
-import           Data.IORef                        (IORef, newIORef, readIORef,
+import           Data.IORef                        (IORef, modifyIORef,
+                                                    newIORef, readIORef,
                                                     writeIORef)
 import           Data.List                         (nub)
 import           Data.List.NonEmpty                (NonEmpty (..))
@@ -42,10 +42,9 @@ import           Control.Monad.Extra               (mapMaybeM)
 import           Control.Monad.IO.Class            (MonadIO, liftIO)
 import           Control.Monad.State               (MonadState, get, gets,
                                                     modify)
-import           Data.Graph.Inductive.Graph        (LNode, lab, mkGraph,
-                                                    prettyPrint)
+import           Data.Graph.Inductive.Graph        (LNode, lab, mkGraph)
 import           Data.Graph.Inductive.PatriciaTree (Gr)
-import           Data.Graph.Inductive.Query.DFS    (isConnected, scc, topsort)
+import           Data.Graph.Inductive.Query.DFS    (scc, topsort)
 import qualified Data.HashMap.Strict               as M
 import           Data.Loc                          (noLoc)
 
@@ -128,9 +127,9 @@ newtype InstGraph = InstGraph
   { unInstGraph :: Gr Ident Ident
   }
 
-newtype ProcGraph = ProcGraph
-  { unProcGraph :: Gr (IORef ProcInst) String --(IORef BusInst)
-  }
+newtype ProcGraph =
+  ProcGraph (Gr (IORef ProcInst) String) --(IORef BusInst)
+
 
 
 data SimExt
@@ -160,18 +159,18 @@ instance Extension SimExt where
 
 data BusChan
   = LocalChan { name       :: Ident
-              , maxVal     :: IORef Value
+              , maxBusVal  :: IORef Value
               , localRead  :: IORef Value
               , localWrite :: IORef Value }
-  | ExternalChan { name     :: Ident
-                 , maxVal   :: IORef Value
-                 , extWrite :: ValuePtr
-                 , extRead  :: ValuePtr }
+  | ExternalChan { name      :: Ident
+                 , maxBusVal :: IORef Value
+                 , extWrite  :: ValuePtr
+                 , extRead   :: ValuePtr }
   deriving (Eq)
 
-newtype BusInst  = BusInst
+data BusInst  = BusInst
   { chans :: M.HashMap Ident BusChan
-  --, ref   :: Ref -- ^Reference to the bus that this was instantiated from
+  , ref   :: Ref -- ^Reference to the bus that this was instantiated from
   } deriving (Eq)
 
 -- data ParamVal
@@ -201,7 +200,8 @@ data ProcInst = ProcInst
 type VTable =  M.HashMap Ident SimRef
 
 data SimRef
-  = MutVal Value
+  = MutVal { cur    :: Value
+           , maxVal :: Value }
   | ConstVal Value
   | InstVal ProcInst
   | BusVal BusInst
@@ -210,7 +210,7 @@ data SimRef
 instance Show SimRef where
   show (BusVal _)   = "BusVal"
   show (ConstVal v) = show v
-  show (MutVal v)   = show v
+  show (MutVal v _) = show v
   show (InstVal v)  = show v
 
 -- | Runs a ProcInst and saves its modified vtable
@@ -224,7 +224,7 @@ evalStm :: Statement -> SimM ()
 evalStm Assign {..} = do
   r <- evalExpr val
   setValueVtab (refOf dest) r
-evalStm i@If {..} = do
+evalStm If {..} = do
   c <- evalCondPair cond body
   mapM_ (uncurry evalCondPair) elif
   case els of
@@ -325,7 +325,7 @@ propagateBus BusInst {..} = do
   forM_
     vs
     (\case
-        LocalChan {localRead = readRef, localWrite = writeRef, name = name} ->
+        LocalChan {localRead = readRef, localWrite = writeRef} ->
           liftIO $
           -- TODO: Calculate max value
           do
@@ -393,18 +393,8 @@ instance {-# OVERLAPPING #-} ToValue Literal where
 instance {-# OVERLAPPABLE #-} (Integral a) => ToValue a where
   toValue v = IntVal $ fromIntegral v
 
--- apiCallWrap :: (SmeCtxPtr -> f) ->  SimM f
--- apiCallWrap fun = do
---   ctx <- apiPtr <$> gets (ext :: SimEnv -> SimExt)
---   return $ fun ctx
-
--- apiCallWrap3 ::
---      (MonadIO m, MonadIO n) => (SmeCtxPtr -> a -> b -> m c) -> a -> b -> n c
--- apiCallWrap3 = undefined
-
-mkBusInst :: Bool -> Ident -> BusShape -> SimM BusInst
-mkBusInst exposed n bs = do
- -- busFun <- apiCallWrap mkExtBus
+mkBusInst :: Bool -> Ident -> BusShape -> Ref -> SimM BusInst
+mkBusInst exposed n bs busRef = do
   chans <-
     puppetMode <$> gets (ext :: SimEnv -> SimExt) >>= \case
       Just ptr ->
@@ -412,7 +402,7 @@ mkBusInst exposed n bs = do
           busPtr <- mkExtBus ptr (toString n) -- liftIO $ apiCallWrap $ busFun (toString n)
           toExtChans exposed busPtr bs
       Nothing -> liftIO $ toBusChans bs
-  return $ BusInst (M.fromList chans)
+  return $ BusInst (M.fromList chans) busRef
   where
     toExtChans :: Bool -> BusPtr -> BusShape -> IO [(Ident, BusChan)]
     toExtChans isPuppet bptr bs' =
@@ -424,12 +414,10 @@ mkBusInst exposed n bs = do
                 if isPuppet
                   then do
                     chan <- mkExtChan bptr (toString i) ty
-                    ExternalChan i <$> newIORef defVal
-                                   <*> pure (writePtr chan)
-                                   <*> pure (readPtr chan)
-                  else LocalChan i <$> newIORef defVal
-                                   <*> newIORef defVal
-                                   <*> newIORef defVal
+                    ExternalChan i <$> newIORef defVal <*> pure (writePtr chan) <*>
+                      pure (readPtr chan)
+                  else LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
+                       newIORef defVal
            _ -> throw $ InternalCompilerError "Illegal bus chan")
         (unBusShape bs')
     toBusChans :: BusShape -> IO [(Ident, BusChan)]
@@ -439,9 +427,8 @@ mkBusInst exposed n bs = do
           ->
            let defVal = fromMaybe (toValue (0 :: Integer)) (toValue <$> lit)
            in (i, ) <$>
-              (LocalChan i <$> newIORef defVal
-                           <*> newIORef defVal
-                           <*> newIORef defVal))
+              (LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
+               newIORef defVal))
         (unBusShape bs')
 
 -- | Creates a new vtable @ds@ from a list of definitions, adding to table
@@ -449,13 +436,15 @@ mkBusInst exposed n bs = do
 mkVtable :: [DefType] -> VTable -> SimM VTable
 mkVtable ds vtab = foldM go vtab ds
   where
-    go m VarDef {..} = return $ M.insert varName (MutVal $ toValue varVal) m
+    go m VarDef {..} =
+      return $
+      M.insert varName (MutVal (toValue varVal) (absValue (toValue varVal))) m
     go m ConstDef {..} =
       return $ M.insert constName (ConstVal $ toValue constVal) m
     go m EnumFieldDef {..} =
       return $ M.insert fieldName (ConstVal $ toValue fieldValue) m
     go m BusDef {..} = do
-      bus <- mkBusInst isExposed busName busShape
+      bus <- mkBusInst isExposed busName busShape busRef
       return $ M.insert busName (BusVal bus) m
     go m _ = return m
 
@@ -561,7 +550,7 @@ lookupCurVtable i = do
     -- v       -> return v
 
 lookupCurVtableE :: Ident -> SimM SimRef
-lookupCurVtableE i = do
+lookupCurVtableE i =
   --traceM ("LoockupCurVtaleE called with " ++ show i)
   lookupCurVtable i >>= \case
     Just v -> return v
@@ -579,7 +568,7 @@ getInVtab i =
 setValueVtab :: Ref -> Value -> SimM ()
 setValueVtab (i :| []) v' =
   getInVtab i >>= \case
-    MutVal _ -> setInVtab i $ MutVal v'
+    MutVal _ maxV -> setInVtab i $ MutVal v' (max maxV (absValue v'))
     BusVal _ -> throw $ InternalCompilerError "bus as value"
     _ -> throw $ InternalCompilerError "immutable value"
   --setInVtab i =<< valToSimRef v
@@ -592,7 +581,7 @@ setValueVtab _ _ = throw $ InternalCompilerError "Compound names not supported"
 getValueVtab :: Ref -> SimM Value
 getValueVtab (i :| []) =
   getInVtab i >>= \case
-    MutVal v -> pure v
+    MutVal v _ -> pure v
     ConstVal v -> pure v
     _ -> throw $ InternalCompilerError "not readable"
 getValueVtab (i :| [i2]) =
@@ -611,10 +600,15 @@ getValueVtab _ = throw $ InternalCompilerError "Compound names not supported"
 setBusVal :: Ident -> BusInst -> Value -> SimM ()
 setBusVal i BusInst {..} v =
   case M.lookup i chans of
-    Just LocalChan {localWrite = write} -> liftIO $ writeIORef write v
-    Just ExternalChan {extWrite = write} -> do
+    Just LocalChan {localWrite = write, maxBusVal = maxBusVal} ->
+      liftIO $ do
+        modifyIORef maxBusVal (`max` absValue v)
+        writeIORef write v
+    Just ExternalChan {extWrite = write, maxBusVal = maxBusVal} -> do
       traceM ("Writing external channel " ++ show v)
-      liftIO $ poke write v
+      liftIO $ do
+        modifyIORef maxBusVal (`max` absValue v)
+        poke write v
     Nothing -> throw $ InternalCompilerError "undefined bus channel"
 
 getBusVal :: Ident -> BusInst -> SimM Value
@@ -630,8 +624,8 @@ getBusVal i BusInst {..} = do
 
 -- | Converts a simulator value reference to a value.
 getValue :: SimRef -> SimM Value
-getValue (MutVal v)   = return v
-getValue (ConstVal v) = return v
+getValue (MutVal v _ ) = return v
+getValue (ConstVal v)  = return v
 
 evalConstExpr :: Expr -> SimM Value
 evalConstExpr PrimLit {..} = return $ toValue lit
@@ -753,7 +747,9 @@ mkInst InstDef { instantiated = instantiated
       (\(parName, parType) (_, parVal) ->
          case parType of
            ConstPar _ ->
-             Just . (parName, ) <$> (MutVal <$> evalConstExpr parVal)
+             Just . (parName, ) <$>
+             (MutVal <$> evalConstExpr parVal <*>
+              (absValue <$> evalConstExpr parVal))
            BusPar {} -> pure Nothing)
       parList
       actual
@@ -761,7 +757,7 @@ mkInst InstDef { instantiated = instantiated
 mkInst _ = pure Nothing
 
 wireInst :: (Ident, ProcInst) -> SimM ProcInst
-wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) = do
+wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
   --traceM "Entered wireInst"
   lookupDef instDefName >>= \case
     InstDef { instantiated = instantiated
@@ -817,7 +813,7 @@ setupSimEnv ptr = do
   nodes' <-
     concat <$>
     mapM
-      (\(ProcLink (n1, n2, l, shouldBeUsed)) -> do
+      (\(ProcLink (n1, n2, _l, _shouldBeUsed)) -> do
          ref1 <- liftIO $ newIORef $ instMap M.! n1
          ref2 <- liftIO $ newIORef $ instMap M.! n2
          return [(n1, ref1), (n2, ref2)])
