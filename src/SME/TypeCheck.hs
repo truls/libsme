@@ -39,9 +39,12 @@ import           SME.Warning
 
 import           Text.Show.Pretty            (ppShow)
 
-import           Debug.Trace                 (trace, traceM)
--- trace :: String -> a -> a
--- trace _ = id
+--import           Debug.Trace                 (trace, traceM)
+trace :: String -> a -> a
+trace _ = id
+
+traceM :: (Applicative f) => String -> f ()
+traceM _ = pure ()
 
 -- * Type checking monad and data structures for holding type checking state
 
@@ -212,6 +215,7 @@ unifyTypes expected t1 t2 = do
           return (Array l1 ity loc)
         Untyped -> throw $ TypeMismatchError (Typed t2') (Typed t1')
     go' (Bool loc) (Bool _) = return (Bool loc)
+    -- TODO: Support unsized integers
     go' t1' t2' = throw $ TypeMismatchError (Typed t2') (Typed t1')
 
 -- | Flips signed to unsigned and vice-versa

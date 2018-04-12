@@ -11,12 +11,13 @@ typedef struct Bus Bus;
 typedef enum Type {
   SME_INT,
   SME_UINT,
-  SME_NATIVE_INT,
-  SME_NATIVE_UINT,
   SME_FLOAT,
   SME_DOUBLE,
   SME_BOOL
 } Type;
+
+/* SME_NATIVE_INT, */
+  /* SME_NATIVE_UINT, */
 
 typedef struct SMEInt {
   int len;
@@ -60,11 +61,29 @@ typedef struct BusMap {
 **/
 SmeCtx* sme_init();
 
+bool sme_open_file(SmeCtx* ctx, const char* file);
+
+void sme_set_options(SmeCtx* ctx, const char* options);
+
+void sme_set_print_errors(SmeCtx* ctx, const char* file);
+
+/**
+   Returns true if an operation within the libsme library failed.
+**/
+bool sme_has_failed(SmeCtx* ctx);
+
+/**
+   Returns a string containing the error message emitted by libsme. The memory
+   pointed to may not be freed except by calling the sme_free function.
+**/
+char* sme_get_error_buffer(SmeCtx* ctx);
+
 /**
    Frees the SME library context and related resources.
 **/
 void sme_free(SmeCtx* ctx);
-void sme_set_proc_ready(int id);
+
+//
 Bus* sme_add_bus(SmeCtx* ctx, char* name);
 ChannelVals* sme_add_chan(Bus* bus, char* name, Type type);
 
@@ -93,7 +112,7 @@ Value* sme_get_read_val(SmeCtx* ctx, const char* bus, const char* chan);
    returns, all processes defined within libsme will have run and written to
    their buses
 **/
-void sme_tick(SmeCtx* ctx);
+bool sme_tick(SmeCtx* ctx);
 
 /**
    Same as sme_tick except that this function will start a simulation for one
@@ -116,7 +135,7 @@ void sme_tick_await(SmeCtx* ctx);
    function returns, the values of all buses defined within libsme have been
    propagated.
 **/
-void sme_propagate(SmeCtx* ctx);
+bool sme_propagate(SmeCtx* ctx);
 
 // Integer representation helper functions
 
@@ -164,13 +183,6 @@ BusMap* sme_get_busmap(SmeCtx* ctx);
    Frees a BusMap structure allocated by sme_get_busmap
 **/
 void sme_free_busmap(BusMap* bm);
-
-void some_func();
-void write_data();
-void spawn_procs();
-
-int wait_tick();
-void done_tick();
 
 Value* sme_bus_get_value(SmeCtx* ctx, char* busname, char* channame);
 

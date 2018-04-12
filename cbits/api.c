@@ -12,8 +12,10 @@
 #include <HsFFI.h>
 //#include <API_stub.h>
 
-extern HsStablePtr hs_sme_init(HsPtr a1);
-extern HsStablePtr clock_tick(HsStablePtr a1);
+extern HsBool hs_propagate_buses(HsStablePtr a1);
+extern HsBool hs_run_procs(HsStablePtr a1);
+extern HsBool hs_sme_load_file(HsPtr a1, HsPtr a2);
+
 
 #include "uthash.h"
 #include "libsme.h"
@@ -37,19 +39,15 @@ struct Bus {
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct SmeCtx {
-  char base[50];
-  char fromHaskell[50];
-  char fromPython[50];
-  int procReady[4];
-  int err_len;
-  char** err_msgs;
+  bool has_failed;
+  char* err_msg;
   HsStablePtr sim_state;
   Bus* buses;
   int (*wait_var)();
   void (*done_var)();
 };
 
-static void sme_library_init(void) __attribute__((constructor));
+//static void sme_library_init(void) __attribute__((constructor));
 static void
 sme_library_init(void)
 {
@@ -60,7 +58,7 @@ sme_library_init(void)
   //sme_init();
 }
 
-static void sme_library_end(void) __attribute__((destructor));
+//static void sme_library_end(void) __attribute__((destructor));
 static void
 sme_library_end(void)
 {
@@ -68,6 +66,10 @@ sme_library_end(void)
 }
 
 // Bus constructor API (This is not exposed through the header file)
+
+void sme_set_sim_state(SmeCtx* ctx, HsStablePtr sim_state) {
+  ctx->sim_state = sim_state;
+}
 
 /* Creates a new named bus */
 Bus* sme_add_bus(SmeCtx* ctx, char* name) {
@@ -245,23 +247,16 @@ sme_free_busmap(BusMap* bm)
 SmeCtx*
 sme_init()
 {
+  sme_library_init();
   SmeCtx* ctx = calloc(sizeof(SmeCtx), 1);
-  ctx->sim_state = hs_sme_init(ctx);
   return ctx;
 }
 
-/* void */
-/* sme_set_proc_ready(int id) */
-/* { */
-/*   pthread_mutex_lock(&mutex); */
-/*   //global_ctx->procReady[id] += 1; */
-/*   pthread_mutex_unlock(&mutex); */
-/* } */
-
-/* void set_tick_wait_funs(int (*wait_var)(), void (*done_var)()) { */
-/*   //global_ctx->wait_var = wait_var; */
-/*   //global_ctx->done_var = done_var; */
-/* } */
+bool
+sme_open_file(SmeCtx* ctx, const char* file)
+{
+  return hs_sme_load_file(ctx, (HsPtr) file);
+}
 
 intmax_t
 sme_read_native_signed_integer(SMEInt* num)
@@ -289,10 +284,11 @@ sme_read_native_unsigned_integer(SMEInt* num)
   return res;
 }
 
-void
+bool
 sme_tick(SmeCtx* ctx)
 {
-  ctx->sim_state = clock_tick(ctx->sim_state);
+  //printf("Called tick\n");
+  return hs_run_procs(ctx->sim_state);
 }
 
 void
@@ -305,25 +301,38 @@ sme_tick_await(SmeCtx* ctx)
 {
 }
 
-int
-sme_get_error_msg_count(SmeCtx* ctx)
-{
-  return ctx->err_len;
-}
-
-char**
-sme_get_error_msgs(SmeCtx* ctx)
-{
-  return ctx->err_msgs;
-}
-
 void
+sme_set_error(SmeCtx* ctx, char* msg)
+{
+  printf("Called set_error\n");
+  if (ctx->err_msg) {
+    free(ctx->err_msg);
+    ctx->err_msg = 0;
+  }
+  ctx->err_msg = strdup(msg);
+  ctx->has_failed = true;
+}
+
+char*
+sme_get_error_buffer(SmeCtx* ctx)
+{
+  return ctx->err_msg;
+}
+
+bool
+sme_has_failed(SmeCtx* ctx)
+{
+  return ctx->has_failed;
+}
+
+bool
 sme_propagate(SmeCtx* ctx)
 {
-  pthread_mutex_lock(&mutex);
   Bus* bus;
   Channel* chan;
 
+  //printf("Called propagate\n");
+  // Propagate local buses
   for (bus = ctx->buses; bus != NULL; bus = bus->hh.next) {
     for (chan = bus->channel; chan != NULL; chan = chan->hh.next) {
       switch (chan->type) {
@@ -350,20 +359,22 @@ sme_propagate(SmeCtx* ctx)
     assert(chan);
     assert(chan->name);
     //assert(chan->read.type == SME_NATIVE_INT);
-    switch (chan->read.type) {
-    case SME_INT:
-      printf("Trace %s.%s %li\n", bus->name, chan->name, sme_read_native_signed_integer(chan->read.value.integer));
-      break;
-    case SME_NATIVE_INT:
-      printf("Trace %s.%s %li\n", bus->name, chan->name, chan->read.value.native_int);
-      break;
-      //sme_read_native_signed_integer(chan->read.value.integer));e
-    default:
-      break;
-    }
+    /* switch (chan->read.type) { */
+    /* case SME_INT: */
+    /*   printf("Trace %s.%s %li\n", bus->name, chan->name, sme_read_native_signed_integer(chan->read.value.integer)); */
+    /*   break; */
+    /* /\* case SME_NATIVE_INT: *\/ */
+    /* /\*   printf("Trace %s.%s %li\n", bus->name, chan->name, chan->read.value.native_int); *\/ */
+    /* /\*   break; *\/ */
+    /*   //sme_read_native_signed_integer(chan->read.value.integer));e */
+    /* default: */
+    /*   break; */
+    /* } */
     }
   }
-  pthread_mutex_unlock(&mutex);
+
+  // Propagate buses in simulator
+  return hs_propagate_buses(ctx->sim_state);
 }
 
 // Integer representation functions
@@ -389,51 +400,13 @@ sme_integer_resize(SMEInt* num, int len)
   num->len = len;
 }
 
-
-/* char* sme_get_data () { */
-/*   pthread_mutex_lock(&mutex); */
-
-/*   char* newstr = malloc(strlen(global_ctx->base) + */
-/*                         strlen(global_ctx->fromHaskell) + */
-/*                         strlen(global_ctx->fromPython) + 400); */
-/*   int* a = global_ctx->procReady; */
-/*   intmax_t val = 0; */
-/*   Value* chan = sme_get_read_val("bus2", "chan2"); */
-/*   switch (chan->type) { */
-/*   case SME_INT: */
-/*     val = sme_read_native_unsigned_integer(chan->value.integer); */
-/*     break; */
-/*   case SME_NATIVE_INT: */
-/*     val = chan->value.native_uint; */
-/*     break; */
-/*   default: */
-/*     val = 0; */
-/*   } */
-
-/*   sprintf(newstr, "%s %s %s, Ready states are: %d %d %d %d :: %d %li\n", */
-/*           global_ctx->base, */
-/*           global_ctx->fromHaskell, */
-/*           global_ctx->fromPython, */
-/*           a[0], */
-/*           a[1], */
-/*           a[2], */
-/*           a[3], */
-/*           0, //chan->value.integer->len, */
-/*           val); */
-/*   pthread_mutex_unlock(&mutex); */
-/*   return newstr; */
-/* } */
-
-
 static void
 free_value(Value* val)
 {
   switch (val->type) {
   case SME_INT:
   case SME_UINT:
-    if (val->value.integer->num) {
-      free(val->value.integer->num);
-    }
+    free(val->value.integer->num);
     free(val->value.integer);
     break;
   default:
@@ -444,7 +417,7 @@ free_value(Value* val)
 void
 sme_free(SmeCtx* ctx)
 {
-  printf("Called free\n");
+  //printf("Called free\n");
 
   if (! ctx) {
     return;
@@ -469,6 +442,8 @@ sme_free(SmeCtx* ctx)
   if (ctx->sim_state) {
     hs_free_stable_ptr(ctx->sim_state);
   }
+  free(ctx->err_msg);
   hs_thread_done();
   free(ctx);
+  sme_library_end();
 }

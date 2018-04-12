@@ -8,6 +8,7 @@ module SME.Stages
   , Config(..)
  -- , CompilerM (..)
   , compile
+  , mkConfig
   ) where
 
 import           Control.Exception     (throw, tryJust)
@@ -44,6 +45,20 @@ data Config = Config
   , warnings         :: Bool -- ^ Are warnings enabled
   , params           :: [String] -- [(String, [(String, String)])]
   -- ^ Entity parameters supplied as command line options.
+  }
+
+mkConfig :: Config
+mkConfig =
+  Config
+  { inputFile = ""
+  , outputDir = ""
+  , dumpStages = []
+  , force = False
+  , strictSizeBounds = False
+  , inferSizeBounds = False
+  , emulateOverflows = False
+  , warnings = False
+  , params = []
   }
 
 dumpStage :: Config -> Stages -> Bool

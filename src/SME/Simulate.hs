@@ -13,7 +13,13 @@
 
 -- | SME network simulator
 
-module SME.Simulate (simulate) where
+module SME.Simulate
+  ( simulate
+  , SimEnv
+  , newSteppingSim
+  , procStep
+  , busStep
+  ) where
 
 import           Control.Exception                 (throw)
 import           Control.Monad                     (foldM, forM, forM_,
@@ -43,13 +49,19 @@ import qualified Data.HashMap.Strict               as M
 import           Data.Loc                          (noLoc)
 
 import           Language.SMEIL.Syntax
-import           SME.API
+import           SME.API.Internal
 import           SME.CTypes
 import           SME.Error
 import           SME.Representation
 
-import           Debug.Trace
+import qualified Debug.Trace                       as D
 import           Text.Show.Pretty                  (ppShow)
+trace :: String -> a -> a
+trace _ = id
+
+traceM :: (Applicative f) => String -> f ()
+traceM _ = pure ()
+
 
 -- import SME.APITypes
 
@@ -108,7 +120,8 @@ instance (MonadRepr SimExt) SimM where
               -- construct, so we look again in that
                -> trace "lookup recursing" $ withScope i (go (N.fromList is))
           Nothing ->
-            trace "lookup recursing2" $ withScope i (go (N.fromList is))
+            --trace "lookup recursing2" $
+            withScope i (go (N.fromList is))
 
 
 newtype InstGraph = InstGraph
@@ -124,8 +137,9 @@ data SimExt
   = EnvExt { labelSource :: !Int
            , curVtable   :: VTable
            , links       :: [ProcLink]
-           , puppetMode  :: Bool
-           , apiPtr      :: SmeCtxPtr
+           , puppetMode  :: Maybe SmeCtxPtr
+           , simProcs    :: [IORef ProcInst]
+           , simBuses    :: [BusInst]
            -- ^ Set to true if we are run as a library
            }
            --, netGraph    ::  NetGraph}
@@ -210,7 +224,7 @@ evalStm :: Statement -> SimM ()
 evalStm Assign {..} = do
   r <- evalExpr val
   setValueVtab (refOf dest) r
-evalStm If {..} = do
+evalStm i@If {..} = do
   c <- evalCondPair cond body
   mapM_ (uncurry evalCondPair) elif
   case els of
@@ -221,7 +235,7 @@ evalStm If {..} = do
       c <-
         evalExpr e >>= \case
           (BoolVal v) -> pure v
-          _ -> error "Type error in if"
+          _ -> throw $ InternalCompilerError "Type error in if"
       when c (mapM_ evalStm ss)
       return c
 
@@ -259,11 +273,15 @@ propagateBus BusInst {..} = do
           liftIO $
           -- TODO: Calculate max value
           do
-            traceM ("Bus looks like " ++ show name)
+            --traceM ("Bus looks like " ++ show name)
             rw <- readIORef writeRef
             rv <- readIORef readRef
             writeIORef readRef rw
-            putStrLn ("Bus read value was " ++ show rv))
+            putStrLn ("Bus read value was " ++ show rv)
+        ExternalChan {} ->
+          -- External channels are propagated by the c-wrapper
+          return ()
+    )
 
 -- numBinOp AndOp{}    = (.&.)
 -- numBinOp DivOp{}    = (/)
@@ -329,7 +347,11 @@ labelInstances = mapUsedTopDefsM_ go
       newLab <- getFreshLabel
       updateTopDef
         procName
-        (\x -> x {symTable = symTab', ext = ProcTabExt {nodeId = newLab}})
+        (\x ->
+           x
+           { symTable = symTab'
+           , ext = ProcTabExt {uniqueBusInstances = 0, nodeId = newLab}
+           })
     go NetworkTable {..} = do
       symTab' <- mapM go' symTable
       newLab <- getFreshLabel
@@ -361,10 +383,10 @@ instance {-# OVERLAPPING #-} ToValue Literal where
 instance {-# OVERLAPPABLE #-} (Integral a) => ToValue a where
   toValue v = IntVal $ fromIntegral v
 
-apiCallWrap :: (SmeCtxPtr -> f) ->  SimM f
-apiCallWrap fun = do
-  ctx <- apiPtr <$> gets (ext :: SimEnv -> SimExt)
-  return $ fun ctx
+-- apiCallWrap :: (SmeCtxPtr -> f) ->  SimM f
+-- apiCallWrap fun = do
+--   ctx <- apiPtr <$> gets (ext :: SimEnv -> SimExt)
+--   return $ fun ctx
 
 -- apiCallWrap3 ::
 --      (MonadIO m, MonadIO n) => (SmeCtxPtr -> a -> b -> m c) -> a -> b -> n c
@@ -372,24 +394,24 @@ apiCallWrap fun = do
 
 mkBusInst :: Bool -> Ident -> BusShape -> SimM BusInst
 mkBusInst exposed n bs = do
-  busFun <- apiCallWrap mkExtBus
+ -- busFun <- apiCallWrap mkExtBus
   chans <-
     puppetMode <$> gets (ext :: SimEnv -> SimExt) >>= \case
-      True ->
+      Just ptr ->
         liftIO $ do
-          busPtr <- busFun (toString n) -- liftIO $ apiCallWrap $ busFun (toString n)
+          busPtr <- mkExtBus ptr (toString n) -- liftIO $ apiCallWrap $ busFun (toString n)
           toExtChans exposed busPtr bs
-      False -> liftIO $ toBusChans bs
+      Nothing -> liftIO $ toBusChans bs
   return $ BusInst (M.fromList chans)
   where
     toExtChans :: Bool -> BusPtr -> BusShape -> IO [(Ident, BusChan)]
-    toExtChans pup bptr bs' =
+    toExtChans isPuppet bptr bs' =
       mapM
         (\case
            (i, (Typed ty, lit)) ->
              let defVal = fromMaybe (toValue (0 :: Integer)) (toValue <$> lit)
              in (i, ) <$>
-                if pup
+                if isPuppet
                   then do
                     chan <- mkExtChan bptr (toString i) ty
                     ExternalChan i <$> newIORef defVal
@@ -398,7 +420,7 @@ mkBusInst exposed n bs = do
                   else LocalChan i <$> newIORef defVal
                                    <*> newIORef defVal
                                    <*> newIORef defVal
-           _ -> error " Illegal bus chan")
+           _ -> throw $ InternalCompilerError "Illegal bus chan")
         (unBusShape bs')
     toBusChans :: BusShape -> IO [(Ident, BusChan)]
     toBusChans bs' =
@@ -450,6 +472,7 @@ instantiates instantiator = mapMaybeM go
     go InstDef {..} = do
       td <- lookupTopDef instantiated
       when (instantiator == instantiated) $
+        -- TODO: We should make sure this is not the case in the typechecker
         throw $ InternalCompilerError "Entity cannot instantiate itself"
         -- TODO: Better error
       return $ Just (nodeId (topExt td), instantiated)
@@ -470,10 +493,10 @@ getNetworkEntry = do
       instOrder = topsort (unInstGraph graph)
   unless (not (null instOrder)) $
     throw $ InternalCompilerError "Network contains no processes"
-  liftIO $ prettyPrint (unInstGraph graph)
-  liftIO $ print $ isConnected (unInstGraph graph)
-  liftIO $ print $ topsort (unInstGraph graph)
-  liftIO $ print $ scc (unInstGraph graph)
+  -- liftIO $ prettyPrint (unInstGraph graph)
+  -- liftIO $ print $ isConnected (unInstGraph graph)
+  -- liftIO $ print $ topsort (unInstGraph graph)
+  -- liftIO $ print $ scc (unInstGraph graph)
   ensureAcyclic graph
   return $
     fromMaybe (Ident "__unknown" noLoc) $
@@ -522,14 +545,14 @@ getLinks = links <$> gets (ext :: SimEnv -> SimExt)
 lookupCurVtable :: Ident -> SimM (Maybe SimRef)
 lookupCurVtable i = do
   e <- gets (ext :: SimEnv -> SimExt)
-  traceM $ "Cur Vtable is " ++ show (curVtable e)
+  --traceM $ "Cur Vtable is " ++ show (curVtable e)
   return $ M.lookup i (curVtable e)
     -- Nothing -> return Nothing
     -- v       -> return v
 
 lookupCurVtableE :: Ident -> SimM SimRef
 lookupCurVtableE i = do
-  traceM ("LoockupCurVtaleE called with " ++ show i)
+  --traceM ("LoockupCurVtaleE called with " ++ show i)
   lookupCurVtable i >>= \case
     Just v -> return v
     Nothing -> throw $ InternalCompilerError "Undefined name during simulation"
@@ -541,19 +564,19 @@ getInVtab ::  Ident -> SimM SimRef
 getInVtab i =
   (M.lookup i <$> getCurVtable) >>= \case
     Just v -> pure v
-    Nothing -> error "Value not found"
+    Nothing -> throw $ InternalCompilerError "Value not found"
 
 setValueVtab :: Ref -> Value -> SimM ()
 setValueVtab (i :| []) v' =
   getInVtab i >>= \case
     MutVal _ -> setInVtab i $ MutVal v'
-    BusVal _ -> error "bus as value"
-    _ -> error "immutable value"
+    BusVal _ -> throw $ InternalCompilerError "bus as value"
+    _ -> throw $ InternalCompilerError "immutable value"
   --setInVtab i =<< valToSimRef v
 setValueVtab (i :| [i2]) v' =
   getInVtab i >>= \case
-    BusVal v -> liftIO $ setBusVal i2 v v'
-    _ -> error "compund name not a bus"
+    BusVal v -> setBusVal i2 v v'
+    _ -> throw $ InternalCompilerError "compund name not a bus"
 setValueVtab _ _ = throw $ InternalCompilerError "Compound names not supported"
 
 getValueVtab :: Ref -> SimM Value
@@ -561,11 +584,13 @@ getValueVtab (i :| []) =
   getInVtab i >>= \case
     MutVal v -> pure v
     ConstVal v -> pure v
-    _ -> error "not readable"
+    _ -> throw $ InternalCompilerError "not readable"
 getValueVtab (i :| [i2]) =
   getInVtab i >>= \case
-    BusVal v -> liftIO $ getBusVal i2 v
-    _ -> error "Only buses are accessible through compound names"
+    BusVal v -> getBusVal i2 v
+    _ ->
+      throw $
+      InternalCompilerError "Only buses are accessible through compound names"
 getValueVtab _ = throw $ InternalCompilerError "Compound names not supported"
 
 -- valAToSimRef :: Value -> SimM SimRef
@@ -573,19 +598,25 @@ getValueVtab _ = throw $ InternalCompilerError "Compound names not supported"
 
 -- TODO: Maybe replace these with Storable instances for BusChan
 
-setBusVal :: Ident -> BusInst -> Value -> IO ()
+setBusVal :: Ident -> BusInst -> Value -> SimM ()
 setBusVal i BusInst {..} v =
   case M.lookup i chans of
-    Just LocalChan {localWrite = write}  -> writeIORef write v
-    Just ExternalChan {extWrite = write} -> poke write v
-    Nothing                              -> error "undefined bus channel"
+    Just LocalChan {localWrite = write} -> liftIO $ writeIORef write v
+    Just ExternalChan {extWrite = write} -> do
+      D.traceM ("Writing external channel " ++ show v)
+      liftIO $ poke write v
+    Nothing -> throw $ InternalCompilerError "undefined bus channel"
 
-getBusVal :: Ident -> BusInst -> IO Value
-getBusVal i BusInst {..} =
+getBusVal :: Ident -> BusInst -> SimM Value
+getBusVal i BusInst {..} = do
+  D.traceM $ "Reading bus val " ++ show i
   case M.lookup i chans of
-    Just LocalChan {localRead = readEnd}  -> readIORef readEnd
-    Just ExternalChan {extRead = readEnd} -> peek readEnd
-    Nothing                               -> error "undefined bus channel"
+    Just LocalChan {localRead = readEnd} -> liftIO $ readIORef readEnd
+    Just ExternalChan {extRead = readEnd} -> do
+      res <- liftIO $ peek readEnd
+      D.trace ("Reading external channel " ++ show res ++ " " ++ show i) $
+        return res
+    Nothing -> throw $ InternalCompilerError "undefined bus channel"
 
 -- | Converts a simulator value reference to a value.
 getValue :: SimRef -> SimM Value
@@ -664,7 +695,7 @@ instEntity :: VTable -> TopDef -> SimM InstTree
 instEntity st NetworkTable {netName = name, symTable = symTable} = do
   let symtab = M.elems symTable
   vtab <- mkVtable symtab st
-  traceM $ "Made symtab: " ++ show vtab
+  --traceM $ "Made symtab: " ++ show vtab
   withVtable_ vtab $ withScope name $ processInstDefs symtab
 instEntity st ProcessTable {stms = stms, procName = name, symTable = symTable} = do
   let symtab = M.elems symTable
@@ -720,7 +751,7 @@ mkInst _ = pure Nothing
 
 wireInst :: (Ident, ProcInst) -> SimM ProcInst
 wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) = do
-  traceM "Entered wireInst"
+  --traceM "Entered wireInst"
   lookupDef instDefName >>= \case
     InstDef { instantiated = instantiated
             , instDef = Instance {params = actual}} -> do
@@ -749,19 +780,27 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) = do
 instsToMap :: [ProcInst] -> M.HashMap Int ProcInst
 instsToMap = foldr (\p@ProcInst {..} m -> M.insert instNodeId p m) M.empty
 
-setupSimEnv :: SimM ()
-setupSimEnv = do
+setupSimEnv :: Maybe SmeCtxPtr -> SimM ()
+setupSimEnv ptr = do
   modify
     (\x ->
-       x {ext = EnvExt { labelSource = 0
-                       , curVtable = M.empty
-                       , links = []}} :: SimEnv)
+       x
+       { ext =
+           EnvExt
+           { labelSource = 0
+           , curVtable = M.empty
+           , links = []
+           , puppetMode = ptr
+           , simProcs = []
+           , simBuses = []
+           }
+       } :: SimEnv)
   labelInstances
   --constructGraph
   entry <- getNetworkEntry
   tree <- lookupTopDef entry >>= instEntity M.empty
   let insts = flattenInstTree tree
-  liftIO $ putStrLn $ ppShow tree
+  -- traceM $ ppShow tree
   let instMap = instsToMap insts
   links <- getLinks
   nodes' <-
@@ -776,9 +815,13 @@ setupSimEnv = do
       graph = ProcGraph $ mkGraph nodes' edges
       buses = nub $ map (\(ProcLink (_, _, _, b)) -> b) links
   procs <- liftIO $ mapM newIORef insts -- nub $ map snd nodes'
-  liftIO $ print (length buses, length procs)
-  _ <- replicateM 10 $ runSimulation procs buses
-  return ()
+  -- Save buses in state
+  modify
+    (\x ->
+       let ee = envExt x
+       in x {ext = ee {simProcs = procs, simBuses = buses}} :: SimEnv)
+  -- liftIO $ print (length buses, length procs)
+  -- _ <- replicateM 10 $ runSimulation procs buses
 
 modifyIORefM :: (MonadIO m) => (a -> m a) -> IORef a -> m ()
 modifyIORefM !f r = liftIO (readIORef r) >>= f >>= (liftIO . writeIORef r)
@@ -788,6 +831,29 @@ runSimulation procs buses = do
   mapM_ propagateBus buses
   mapM_ (modifyIORefM runProcess) procs
 
+--setupIncrSimulation :: Env ->
+
+newSteppingSim :: Env -> SmeCtxPtr -> IO (Either TypeCheckErrors SimEnv)
+newSteppingSim env ptr = runStep (toSimEnv env) $ setupSimEnv (Just ptr)
+
+runStep :: SimEnv -> SimM () -> IO (Either TypeCheckErrors SimEnv)
+runStep env act = do
+  (res, env') <- runReprM env (unSimM act)
+  return $
+    case res of
+      Right () -> Right env'
+      Left l   -> Left l
+
+procStep :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
+procStep env =
+  let act = mapM_ (modifyIORefM runProcess) =<< gets (simProcs . envExt)
+  in runStep env act
+
+busStep :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
+busStep env =
+  let act = mapM_ propagateBus =<< gets (simBuses . envExt)
+  in runStep env act
+
 toSimEnv :: Env -> SimEnv
 toSimEnv = (<$) EmptyExt
 
@@ -795,8 +861,12 @@ runSimM :: Env -> SimM a -> IO (Either TypeCheckErrors a, SimEnv)
 runSimM env act = runReprM (toSimEnv env) (unSimM act)
 
 simulate :: Env -> IO () --(Either TypeCheckErrors SimEnv)
-simulate e =
-  void $ runSimM e setupSimEnv
+simulate e = void $ runSimM e (setupSimEnv Nothing)
+  -- (res, env) <-
+  -- return $
+  --   case res of
+  --     Right () -> Right env
+  --     Left l   -> Left l
 
 
 -- We initialize a entity content by creating a value table initialized with

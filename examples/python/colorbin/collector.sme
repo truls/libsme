@@ -1,0 +1,55 @@
+proc collector (in image_input)
+
+    exposed bus bin_count_out {
+        valid: bool;
+
+        low: u32;
+        med: u32;
+        high: u32;
+    };
+
+    // TODO: Test with thresholds given as parameters
+    const thresh_high: u32 = 200;
+    const thresh_med: u32 = 100;
+
+    var countlow: u32;
+    var countmed: u32;
+    var counthigh: u32;
+
+    var color: u32;
+{
+    if (image_input.valid) {
+        color = ((image_input.R * 299) +
+            (image_input.G * 287) +
+            (image_input.B * 114)) / 1000;
+
+        if (color > thresh_high) {
+            counthigh = counthigh + 1;
+        } elif (color > thresh_med) {
+            countmed = countmed + 1;
+        } else {
+            countlow = countlow + 1;
+        }
+    }
+
+    if (image_input.valid) {
+        bin_count_out.valid = true;
+        countlow = 0;
+        countmed = 0;
+        counthigh = 0;
+    }
+
+}
+
+network coll_net() {
+    exposed bus image_input {
+        valid: bool;
+        last_pixel: bool;
+
+        R: u8;
+        G: u8;
+        B: u8;
+    };
+
+    instance _ of collector(image_input);
+}

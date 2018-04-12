@@ -1,3 +1,6 @@
 .stack-work/
 libsme.cabal
 *~
+lib/
+output/
+.ropeproject/

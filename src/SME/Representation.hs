@@ -53,9 +53,12 @@ import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
 import           SME.Error
 
-import           Debug.Trace            (trace, traceM)
---trace :: String -> a -> a
---trace _ = id
+--import           Debug.Trace            (trace, traceM)
+trace :: String -> a -> a
+trace _ = id
+
+traceM :: (Applicative f) => String -> f ()
+traceM _ = pure ()
 
 newtype ReprM m s a = ReprM
   { unReprM :: ExceptT TypeCheckErrors (StateT (BaseEnv s) m) a

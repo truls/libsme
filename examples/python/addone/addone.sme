@@ -1,0 +1,22 @@
+proc plusone(in inbus, const val)
+    exposed bus plusout {
+       val: i32;
+    };
+    const one: i2 = 2;
+    var two: i2 = 0;
+{
+    if (inbus.valid) {
+        two = two + val;
+        plusout.val = two; //inbus.val + two;
+    }
+}
+
+network plusone_net() {
+    exposed bus idout {
+        valid: bool;
+        val: i32;
+    };
+
+    const foo: i4 = 10;
+    instance plusone_inst of plusone(idout, 2);
+}

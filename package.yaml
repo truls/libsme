@@ -23,7 +23,7 @@ ghc-options:
   - -Wcompat
   - -Wnoncanonical-monad-instances
   - -Wnoncanonical-monadfail-instances
-  - -O0
+  - -O2
 
 cc-options:
   - -g

@@ -1,96 +1,113 @@
-{-# LANGUAGE EmptyDataDecls           #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE LambdaCase               #-}
+{-# LANGUAGE ScopedTypeVariables      #-}
 
 module SME.API
-  ( ValuePtr
-  , SmeCtxPtr
-  , BusPtr
-  , ChannelVals
-  , readPtr
-  , writePtr
-  , peek
-  , poke
-  , mkExtBus
-  , mkExtChan
+  (
   ) where
 
-import           Foreign.C.String      (CString, withCString)
-import           Foreign.C.Types
-import           Foreign.ForeignPtr    (ForeignPtr, newForeignPtr,
-                                        withForeignPtr)
-import           Foreign.Ptr           (FunPtr, Ptr)
-import           Foreign.StablePtr     (StablePtr)
-import           Foreign.Storable      (peek, poke)
+import           Control.Exception  (try, tryJust)
+import           Foreign.C.String   (CString, peekCString, withCString)
+import           Foreign.StablePtr  (StablePtr, deRefStablePtr, freeStablePtr,
+                                     newStablePtr)
 
-import           SME.CTypes
+import           SME.API.Internal
+import           SME.Error
+import           SME.ImportResolver
+import           SME.Simulate
+import           SME.Stages
+import           SME.TypeCheck
 
-import           Language.SMEIL.Syntax (Type (..))
-import qualified SME.Representation    as R
+--import           Debug.Trace
 
-data Bus
-type BusPtr = Ptr Bus
+trace :: String -> a -> a
+trace _ = id
 
-data Chan
-type ChanPtr = Ptr ChannelVals
+traceM :: (Applicative f) => String -> f ()
+traceM _ = pure ()
 
-type ChanValPtr = ForeignPtr ChannelVals
+type SimCtxPtr = StablePtr ApiCtx
 
-type ValuePtr = Ptr R.Value
+foreign export ccall "hs_propagate_buses"
+  propagateBuses :: SimCtxPtr -> IO Bool
+foreign export ccall "hs_run_procs"
+  runProcs :: SimCtxPtr -> IO Bool
+foreign export ccall "hs_sme_load_file"
+  loadFile :: SmeCtxPtr -> CString -> IO Bool
 
-data SmeCtx
-newtype SimCtx = SimCtx SmeCtxPtr
+foreign import ccall "sme_set_sim_state"
+  sme_set_sim_state :: SmeCtxPtr -> SimCtxPtr -> IO ()
+foreign import ccall "sme_set_error"
+  sme_set_error :: SmeCtxPtr -> CString -> IO ()
 
-type SmeCtxPtr = Ptr SmeCtx
-type SimCtxPtr = StablePtr SimCtx
+data ApiCtx = ApiCtx
+  { libCtx        :: SmeCtxPtr
+  , config        :: Config
+  , simState      :: SimEnv
+  , errorRenderer :: TypeCheckErrors -> String
+  }
 
+setError :: SmeCtxPtr -> String -> IO ()
+setError ptr e = withCString e (sme_set_error ptr)
 
-foreign export ccall "hs_sme_init"
-  hsSmeInit :: SmeCtxPtr -> IO SimCtxPtr
-foreign export ccall "clock_tick"
-  clockTick :: SimCtxPtr -> IO SimCtxPtr
+loadFile :: SmeCtxPtr -> CString -> IO Bool
+loadFile c f = do
+  file <- peekCString f
+  -- TODO: Catch IO errors here
+  try (resolveImports file) >>= \case
+    Left e -> do
+      setError c (show (e :: ImportingError)) --(renderError nameMap e)
+      return False
+    Right (df, nameMap) -> do
+      res <-
+        tryJust
+          (\(e :: TypeCheckErrors) -> Just $ renderError nameMap e)
+          (typeCheck df)
+      case res of
+        Left e -> trace "first res left" $ setError c e >> return False
+        Right r ->
+          trace "first res right" $
+          newSteppingSim r c >>= \case
+            Left e ->
+              trace "second res left" $
+              setError c (renderError nameMap e) >> return False
+            Right r' ->
+              trace "second res right" $ do
+                ptr <-
+                  newStablePtr
+                    ApiCtx
+                    { libCtx = c
+                    , config = mkConfig
+                    , simState = r'
+                    , errorRenderer = renderError nameMap
+                    }
+                sme_set_sim_state c ptr
+                return True
 
-foreign import ccall "src/runner.h sme_add_bus"
-               sme_add_bus :: SmeCtxPtr -> CString -> IO BusPtr
-foreign import ccall unsafe "src/runner.h sme_get_read_val"
-               sme_get_read_val :: SmeCtxPtr -> CString -> CString -> IO ValuePtr
-foreign import ccall unsafe "src/runner.h sme_get_write_val"
-               sme_get_write_val :: SmeCtxPtr -> CString -> CString -> IO ValuePtr
-foreign import ccall "src/runner.h sme_add_chan" sme_add_chan ::
-               BusPtr -> CString -> CInt -> IO ChanPtr
-foreign import ccall "&free_chan_vals" free_chan_vals ::
-               FunPtr (ChanPtr -> IO ())
+runStep ::
+     SimCtxPtr -> (SimEnv -> IO (Either TypeCheckErrors SimEnv)) -> IO Bool
+runStep c f = do
+  ctx <- deRefStablePtr c
+  freeStablePtr c
+  res <-
+    tryJust
+      (\(e :: TypeCheckErrors) -> Just $ errorRenderer ctx e)
+      (f (simState ctx))
+  case res of
+    Right s ->
+      case s of
+        Right s' ->
+          trace "runStep right" $ do
+            sme_set_sim_state (libCtx ctx) =<< newStablePtr ctx {simState = s'}
+            return True
+        Left e -> setError (libCtx ctx) (errorRenderer ctx e) >> return False
+    Left e ->
+      trace "runStep left" $ do
+        setError (libCtx ctx) e
+        return False
 
-mapToCType :: Type -> SMECType
-mapToCType Signed {}   = SmeInt
-mapToCType Unsigned {} = SmeUint
-mapToCType Single {}   = SmeFloat
-mapToCType Double {}   = SmeDouble
-mapToCType Bool {}     = SmeBool
-mapToCType _           = undefined
+propagateBuses :: SimCtxPtr -> IO Bool
+propagateBuses c = runStep c busStep
 
-mkExtBus :: SmeCtxPtr -> String -> IO BusPtr
-mkExtBus c s = withCString s $ sme_add_bus c
-
-mkExtChan :: BusPtr -> String -> Type -> IO ChannelVals
-mkExtChan bp s ct = do
-  chanPtr <-
-    withCString
-      s
-      (\x -> sme_add_chan bp x (fromIntegral $ fromEnum $ mapToCType ct))
-  fptr <- newForeignPtr free_chan_vals chanPtr
-  withForeignPtr fptr peek
-
-
-clockTick :: SimCtxPtr -> IO SimCtxPtr
-clockTick _ptr = undefined
-  -- do
-  -- (SimCtx ctx) <- deRefStablePtr ptr
-  -- freeStablePtr ptr
-  -- syncProcess ctx 0
-  -- newStablePtr (SimCtx ctx)
-
-hsSmeInit :: SmeCtxPtr -> IO SimCtxPtr
-hsSmeInit _ptr = undefined
--- do
---   setupChans ptr
---   newStablePtr (SimCtx ptr)
+runProcs :: SimCtxPtr -> IO Bool
+runProcs c = runStep c procStep
