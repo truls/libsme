@@ -260,6 +260,7 @@ table =
   in [ [ prefix "+" unary S.UnPlus
        , prefix "-" unary S.UnMinus
        , prefix "!" unary S.NotOp
+       , prefix "~" unary S.NegOp
        ]
      , [binary "*" bin S.MulOp, binary "/" bin S.DivOp, binary "%" bin S.ModOp]
      , [binary "+" bin S.PlusOp, binary "-" bin S.MinusOp]

@@ -472,12 +472,15 @@ data UnOp
   = UnPlus { loc :: SrcLoc }
   | UnMinus { loc :: SrcLoc }
   | NotOp { loc :: SrcLoc }
+  | NegOp { loc :: SrcLoc }
+
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance Located UnOp where
   locOf UnPlus  {..} = locOf loc
   locOf UnMinus {..} = locOf loc
   locOf NotOp   {..} = locOf loc
+  locOf NegOp   {..} = locOf loc
 
 data Name
   = Name { base  :: NamePart

@@ -216,6 +216,7 @@ instance Pretty UnOp where
   ppr (UnPlus _)  = text "+"
   ppr (UnMinus _) = text "-"
   ppr (NotOp _)   = text "!"
+  ppr (NegOp _)   = text "~"
 
 instance Pretty Name where
   ppr (Name i is _) = cat $ punctuate dot (map ppr (i:is))
