@@ -26,7 +26,8 @@ import           Control.Monad                     (foldM, forM, forM_,
                                                     mapAndUnzipM, mapM_,
                                                     replicateM, unless, void,
                                                     when, zipWithM)
-import           Data.Bits
+import           Data.Bits                         (complement, shiftL, shiftR,
+                                                    xor, (.&.), (.|.))
 import           Data.IORef                        (IORef, newIORef, readIORef,
                                                     writeIORef)
 import           Data.List                         (nub)
@@ -50,12 +51,11 @@ import           Data.Loc                          (noLoc)
 
 import           Language.SMEIL.Syntax
 import           SME.API.Internal
-import           SME.CTypes
 import           SME.Error
 import           SME.Representation
 
-import qualified Debug.Trace                       as D
-import           Text.Show.Pretty                  (ppShow)
+--import qualified Debug.Trace                       as D
+--import           Text.Show.Pretty                  (ppShow)
 trace :: String -> a -> a
 trace _ = id
 
@@ -244,24 +244,80 @@ evalExpr :: Expr -> SimM Value
 evalExpr Binary {..} = do
   l <- evalExpr left
   r <- evalExpr right
-  return (evalBinOp binOp l r)
-evalExpr PrimName {..} = do
+  evalBinOp binOp l r
+evalExpr Unary {..} = do
+  r <- evalExpr right
+  evalUnOp unOp r
+evalExpr PrimName {..} =
   getValueVtab (refOf name)
 evalExpr PrimLit {..} =
   pure $ toValue lit
 
 
-evalBinOp :: BinOp -> Value -> Value -> Value
-evalBinOp op (IntVal i) (IntVal j) =
-  IntVal $ numBinOp op i j
---evalBinOp
+-- FIXME: Find a better way of doing this
+evalBinOp :: BinOp -> Value -> Value -> SimM Value
+evalBinOp PlusOp {} (IntVal i) (IntVal j)        = pure $ IntVal $ i + j
+evalBinOp PlusOp {} (DoubleVal i) (DoubleVal j)  = pure $ DoubleVal $ i + j
+evalBinOp PlusOp {} (SingleVal i) (SingleVal j)  = pure $ SingleVal $ i + j
+evalBinOp MinusOp {} (IntVal i) (IntVal j)       = pure $ IntVal $ i - j
+evalBinOp MinusOp {} (DoubleVal i) (DoubleVal j) = pure $ DoubleVal $ i - j
+evalBinOp MinusOp {} (SingleVal i) (SingleVal j) = pure $ SingleVal $ i - j
+evalBinOp ModOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i `mod` j
+evalBinOp MulOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i * j
+evalBinOp MulOp {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i * j
+evalBinOp MulOp {} (SingleVal i) (SingleVal j)   = pure $ SingleVal $ i * j
+evalBinOp DivOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i `div` j
+evalBinOp DivOp {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i / j
+evalBinOp DivOp {} (SingleVal i) (SingleVal j)   = pure $ SingleVal $ i / j
+evalBinOp AndOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i .&. j
+evalBinOp OrOp {} (IntVal i) (IntVal j)          = pure $ IntVal $ i .|. j
+evalBinOp SllOp {} (IntVal i) (IntVal j)         =
+  pure $ IntVal $  shiftL i (fromIntegral j)
+evalBinOp SrlOp {} (IntVal i) (IntVal j)         =
+  pure $ IntVal $  shiftR i (fromIntegral j)
+evalBinOp XorOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i `xor` j
+evalBinOp ConOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i && j
+evalBinOp EqOp {} (IntVal i) (IntVal j)          = pure $ BoolVal $ i == j
+evalBinOp EqOp {} (DoubleVal i) (DoubleVal j)    = pure $ BoolVal $ i == j
+evalBinOp EqOp {} (SingleVal i) (SingleVal j)    = pure $ BoolVal $ i == j
+evalBinOp EqOp {} (BoolVal i) (BoolVal j)        = pure $ BoolVal $ i == j
+evalBinOp DisOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i || j
+evalBinOp GeqOp {} (IntVal i) (IntVal j)         = pure $ BoolVal $ i >= j
+evalBinOp GeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i >= j
+evalBinOp GeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i >= j
+evalBinOp GeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i >= j
+evalBinOp GtOp {} (IntVal i) (IntVal j)          = pure $ BoolVal $ i > j
+evalBinOp GtOp {} (DoubleVal i) (DoubleVal j)    = pure $ BoolVal $ i > j
+evalBinOp GtOp {} (SingleVal i) (SingleVal j)    = pure $ BoolVal $ i > j
+evalBinOp GtOp {} (BoolVal i) (BoolVal j)        = pure $ BoolVal $ i > j
+evalBinOp LeqOp {} (IntVal i) (IntVal j)         = pure $ BoolVal $ i <= j
+evalBinOp LeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i <= j
+evalBinOp LeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i <= j
+evalBinOp LeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i <= j
+evalBinOp LtOp {} (IntVal i) (IntVal j)          = pure $ BoolVal $ i < j
+evalBinOp LtOp {} (DoubleVal i) (DoubleVal j)    = pure $ BoolVal $ i < j
+evalBinOp LtOp {} (SingleVal i) (SingleVal j)    = pure $ BoolVal $ i < j
+evalBinOp LtOp {} (BoolVal i) (BoolVal j)        = pure $ BoolVal $ i < j
+evalBinOp NeqOp {} (IntVal i) (IntVal j)         = pure $ BoolVal $ i /= j
+evalBinOp NeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i /= j
+evalBinOp NeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i /= j
+evalBinOp NeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i /= j
+evalBinOp _ _ _                                  =
+  throw $ InternalCompilerError "Unsupported types for binary operator"
 
-numBinOp :: (Num a) => BinOp -> (a -> a -> a)
-numBinOp PlusOp {}  = (+)
-numBinOp MinusOp {} = (-)
-numBinOp MulOp {}   = (*)
+evalUnOp :: UnOp -> Value -> SimM Value
+evalUnOp UnPlus {} (IntVal i)     = pure $ IntVal i
+evalUnOp UnPlus {} (SingleVal i)  = pure $ SingleVal i
+evalUnOp UnPlus {} (DoubleVal i)  = pure $ DoubleVal i
+evalUnOp UnMinus {} (IntVal i)    = pure $ IntVal $ negate i
+evalUnOp UnMinus {} (SingleVal i) = pure $ SingleVal $ negate i
+evalUnOp UnMinus {} (DoubleVal i) = pure $ DoubleVal $ negate i
+evalUnOp NotOp {} (BoolVal i)     = pure $ BoolVal $ not i
+evalUnOp NegOp {} (IntVal i)      = pure $ IntVal $ complement i
+evalUnOp _ _                      =
+  throw $ InternalCompilerError "Unsupported types for unary operator"
 
---boolBinOp :: (Eq a, Ord a) => BinOp -> (a->a->Bool)
+
 
 propagateBus :: BusInst -> SimM ()
 propagateBus BusInst {..} = do
@@ -282,52 +338,6 @@ propagateBus BusInst {..} = do
           -- External channels are propagated by the c-wrapper
           return ()
     )
-
--- numBinOp AndOp{}    = (.&.)
--- numBinOp DivOp{}    = (/)
---numBinOp EqOp{}     = (==)
---numBinOp ConOp{}    = (||)
---numBinOp DisOp{}    = (&&)
-
---boolBinOp
-
--- data Value a
---   = SimpleV (SimpleVal a)
---   | ArrayVal Int a
-
--- newtype SimpleVal a = SimpleVal a
--- data ArrayVal a = ArrayVal Int [a]
-
---data family Val a where
-
--- type family Val a where
---   Val Integer = SimpleVal Int
---   Val Bool = SimpleVal Bool
---   --Val [a] = ArrayVal a
-
--- instance
-
-
---binOpFun :: BinOp -> (a -> a -> a)
---binOpFun AndOp{} = (.&.)
--- binOpFun ConOp{} = (||)
--- binOpFun DivOp{} = (/)
--- binOpFun EqOp{}  = (==)
--- binOpFun DisOp{} = (&&)
--- binOpFun GeqOp{} =
--- binOpFun GtOp{} =
--- binOpFun LeqOp{} =
-
- -- binOpFun LtOp{} =
--- binOpFun MinusOp{} =
--- binOpFun ModOp{} =
--- binOpFun MulOp{} =
--- binOpFun NeqOp{} =
-  -- binOpFun OrOp{} =
---binOpFun PlusOp{} = (+)
--- binOpFun SllOp{} =
--- binOpFun SrlOp{} =
--- binOpFun XorOp{} =
 
 -- | Returns a new and globally unique integer every time its called.
 getFreshLabel :: SimM Int
@@ -603,18 +613,18 @@ setBusVal i BusInst {..} v =
   case M.lookup i chans of
     Just LocalChan {localWrite = write} -> liftIO $ writeIORef write v
     Just ExternalChan {extWrite = write} -> do
-      D.traceM ("Writing external channel " ++ show v)
+      traceM ("Writing external channel " ++ show v)
       liftIO $ poke write v
     Nothing -> throw $ InternalCompilerError "undefined bus channel"
 
 getBusVal :: Ident -> BusInst -> SimM Value
 getBusVal i BusInst {..} = do
-  D.traceM $ "Reading bus val " ++ show i
+  traceM $ "Reading bus val " ++ show i
   case M.lookup i chans of
     Just LocalChan {localRead = readEnd} -> liftIO $ readIORef readEnd
     Just ExternalChan {extRead = readEnd} -> do
       res <- liftIO $ peek readEnd
-      D.trace ("Reading external channel " ++ show res ++ " " ++ show i) $
+      trace ("Reading external channel " ++ show res ++ " " ++ show i) $
         return res
     Nothing -> throw $ InternalCompilerError "undefined bus channel"
 
