@@ -271,33 +271,47 @@ table =
        , binary ">" bin S.GtOp
        ]
      , [binary "==" bin S.EqOp, binary "!=" bin S.EqOp]
-     , [binary "&" bin S.AndOp, binary "^" bin S.XorOp, binary "|" bin S.OrOp]
+     , [ binary' (doubleSymGuard '&') bin S.AndOp
+       , binary "^" bin S.XorOp
+       , binary' (doubleSymGuard '|') bin S.OrOp
+       ]
      , [binary "&&" bin S.ConOp]
      , [binary "||" bin S.DisOp]
      ]
 
-posSymbol :: T.Text -> (SrcLoc -> a) -> Parser (a, SrcLoc)
-posSymbol s f = do
+doubleSymGuard :: Char -> Parser ()
+doubleSymGuard c = try $ lexeme $ char c >> notFollowedBy (char c)
+
+posSymbol :: Parser a -> (SrcLoc -> b) -> Parser (b, SrcLoc)
+posSymbol p f = do
   putPos
-  _ <- symbol s
+  _ <- p
   pos <- makePos'
   return (f pos, pos)
+
+binary' ::
+  Parser a
+  -> (b -> c -> c -> SrcLoc -> c)
+  -> (SrcLoc -> b)
+  -> Operator Parser c
+binary' p f g =
+  InfixL
+    (do (g', pos) <- posSymbol p g
+        return (\s r -> f g' s r pos))
 
 binary ::
      T.Text
   -> (a -> b -> b -> SrcLoc -> b)
   -> (SrcLoc -> a)
   -> Operator Parser b
-binary n f g =
-  InfixL
-    (do (g', pos) <- posSymbol n g
-        return (\s r -> f g' s r pos))
+binary n =
+  binary' (symbol n)
 
 prefix ::
      T.Text -> (a -> b -> SrcLoc -> b) -> (SrcLoc -> a) -> Operator Parser b
 prefix n f g =
   Prefix
-    (do (g', pos) <- posSymbol n g
+    (do (g', pos) <- posSymbol (symbol n) g
         return (\s -> f g' s pos))
 
 typeName :: Parser S.Type
