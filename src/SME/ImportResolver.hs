@@ -263,7 +263,7 @@ renameRefs = transformBiM go
       in lookupPrefix b >>= \case
            Just (n, ha) ->
              return $
-             Name (IdentName ha (SrcLoc $ locOf ha)) (drop n (base : parts)) loc
+             Name (IdentName ha (SrcLoc $ locOf ha) :| N.drop n parts) loc
            Nothing -> return o
 
 -- DONE: When we have unqualified specific imports of names, we need to make

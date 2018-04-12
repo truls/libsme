@@ -56,7 +56,7 @@ genName :: Name -> GenM V.Name
 genName Name {..} =
   let n =
         intercalate "_" $
-        map (\IdentName {ident = i} -> (toString i)) (base : parts)
+        map (\IdentName {ident = i} -> (toString i)) (N.toList parts)
   in return [Q.name|$ident:n|]
 
 genLit :: Literal -> V.Expression

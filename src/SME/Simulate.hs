@@ -635,9 +635,10 @@ getValue (ConstVal v) = return v
 
 evalConstExpr :: Expr -> SimM Value
 evalConstExpr PrimLit {..} = return $ toValue lit
-evalConstExpr PrimName {name = Name {..}} = case base of
-  IdentName {..} -> getValue =<< lookupCurVtableE ident
-  ArrayAccess {} -> undefined
+evalConstExpr PrimName {name = Name {..}} =
+  case parts of
+    (IdentName {ident = ident} :| _) -> getValue =<< lookupCurVtableE ident
+    (ArrayAccess {} :| _)            -> undefined
     -- do
     -- lookupCurVtable ident >>= \case
     --   ArrayVal {} -> error "Arrays not implemented"

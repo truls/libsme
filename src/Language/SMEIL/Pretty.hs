@@ -219,7 +219,7 @@ instance Pretty UnOp where
   ppr (NegOp _)   = text "~"
 
 instance Pretty Name where
-  ppr (Name i is _) = cat $ punctuate dot (map ppr (i:is))
+  ppr (Name ps _) = cat $ punctuate dot (map ppr (toList ps))
 
 instance Pretty NamePart where
   ppr (IdentName i _)     = ppr i

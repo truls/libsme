@@ -3,7 +3,7 @@
 module Language.SMEIL.Parser.Impl where
 
 import           Control.Monad               (void)
-import           Data.List.NonEmpty          (NonEmpty ((:|)))
+import           Data.List.NonEmpty          (NonEmpty ((:|)), fromList)
 import           Data.Loc                    (SrcLoc)
 import           Data.Maybe                  (fromMaybe, isJust)
 import qualified Data.Text                   as T
@@ -204,22 +204,22 @@ statement =
       braces (many statement) <?> "for statement"
     switchStm =
       reserved "switch" >>
-      S.Switch <$> (expression <* reserved "where") <*> braces (many switchCase) <*>
-      optional defaultCase <?> "switch statement"
+      S.Switch <$> (expression <* reserved "where") <*>
+      (symbol "{" *> many switchCase) <*>
+      (optional defaultCase <* symbol "}") <?> "switch statement"
       where
         switchCase =
           reserved "case" >>
           (,) <$> expression <*> braces (some statement) <?> "switch case"
-        defaultCase = reserved "default" >> colon *> some statement
+        defaultCase = reserved "default" *> braces (some statement)
     barrierStm = reserved "barrier" >> semi >> pure S.Barrier
     breakStm = reserved "break" >> semi >> pure S.Break
     returnStm = reserved "return" >> S.Return <$> optional expression <* semi
 
 name :: Parser S.Name
 name = withPos $ do
-  part1 <- namePart
-  rest <- optional (dot >> namePart `sepBy` dot)
-  return $ S.Name part1 (fromMaybe [] rest)
+  rest <- namePart `sepBy1` dot
+  return $ S.Name $ fromList rest
 
 namePart :: Parser S.NamePart
 namePart = do

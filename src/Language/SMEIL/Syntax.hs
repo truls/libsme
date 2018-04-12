@@ -483,14 +483,13 @@ instance Located UnOp where
   locOf NegOp   {..} = locOf loc
 
 data Name
-  = Name { base  :: NamePart
-         , parts :: [NamePart]
+  = Name { parts :: N.NonEmpty NamePart
          , loc   :: SrcLoc
          }
     deriving (Eq, Ord, Show, Data, Typeable)
 
 instance References Name where
-  refOf Name {..} = foldl (<>) (refOf base) (map refOf parts)
+  refOf Name {..} = foldl1 (<>) (N.map refOf parts)
 
 instance Located Name where
   locOf Name {..}   = locOf loc
