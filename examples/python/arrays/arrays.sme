@@ -1,0 +1,36 @@
+proc fillRead(in inbus)
+    exposed bus arr_out {
+        val: i32;
+        valid: bool;
+    };
+    const store: u1 = 0;
+    const load: u1 = 1;
+    var array: [10]i32;
+    var n: i32;
+{
+    // TODO: This should fail in the type checker
+    //n[3] = 4;
+    switch inbus.mode where {
+        case store {
+            array[inbus.pos] = inbus.val;
+            arr_out.valid = false;
+        }
+        case load {
+            arr_out.val = array[inbus.pos];
+            arr_out.valid = true;
+        }
+        default {
+             arr_out.valid = false;
+        }
+    }
+}
+
+network arrays_net() {
+    exposed bus control {
+        mode: u1;
+        pos: u4;
+        val: i32;
+    };
+
+    instance fillRead of fillRead(control);
+}

@@ -289,9 +289,13 @@ genVarDecls dts =
     dts
     (\case
        VarDef {..} ->
-         return $
-         Just
-           [procdecl|variable $ident:(toString varName) : $subtyind:(genType (typeOf varDef)) := $expr:(genLit varVal);|]
+         let dv =
+               case varVal of
+                 Just v  -> genLit v
+                 Nothing -> [expr|0|]
+         in return $
+            Just
+              [procdecl|variable $ident:(toString varName) : $subtyind:(genType (typeOf varDef)) := $expr:dv;|]
        ConstDef {..} ->
          return $
          Just

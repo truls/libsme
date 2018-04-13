@@ -497,6 +497,7 @@ instance Located Name where
 data NamePart
   = IdentName { ident :: Ident
               , loc   :: SrcLoc }
+  -- FIXME: Dont't express multi-dim arrays through a recursive NamePart
   | ArrayAccess { namePart :: NamePart
                 , index    :: ArrayIndex
                 , loc      :: SrcLoc }
@@ -528,6 +529,9 @@ data Type
           , innerTy   :: Type
           , loc       :: SrcLoc }
   deriving (Eq, Ord, Show, Data, Typeable)
+
+instance Typed Type where
+  typeOf = Typed
 
 -- instance Ord Type where
 --   compare

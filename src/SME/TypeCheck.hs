@@ -128,6 +128,28 @@ lookupTy r = do
         Just a  -> pure a
         Nothing -> trace "lookupBusShape" $ throw $ UndefinedName r
 
+hasArrayAccess :: Name -> Bool
+hasArrayAccess Name {..} =
+  (flip any) (N.toList parts) isArray
+
+isArray :: NamePart -> Bool
+isArray  IdentName {}  = False
+isArray ArrayAccess {} = True
+
+-- TODO: Handle multi-dimensional arrays
+-- This is a bit of hack. The idea is that if the final component of a name is
+-- an array, the name is an array lookup and we need to return the element type
+-- of the array. If any other component of the name is an array lookup, then we
+-- can discard the array indexing from a type point-of-view since all elements
+-- has the same type.
+lookupName :: (MonadRepr s m) => Name -> m Typeness
+lookupName n@Name {parts = parts} = case N.last parts of
+  ArrayAccess {} ->
+    lookupTy n >>= \case
+      -- TODO: Location of innerTy is probably not set
+      Typed Array {..} -> return $ Typed innerTy
+      _ -> throw $ NotAnArray n
+  IdentName {} -> lookupTy n
 
 -- | Tracks and update the usage of a variable in a scope and throws if
 -- inconsistencies are found
@@ -241,9 +263,9 @@ setTypeLoc loc (Typed t) = Typed (t { loc = fromLoc loc } :: Type)
 -- | Check expression and update references as needed
 checkExpr :: (MonadRepr s m) => Expr -> m (Typeness, Expr)
 checkExpr p@PrimName {..} = do
-  ty' <- trackUsage Load name lookupTy
+  ty' <- trackUsage Load name lookupName
   return (ty', p {ty = ty'} :: Expr)
-checkExpr p@FunCall {..}  = (,p) <$> lookupTy name
+checkExpr p@FunCall {..}  = (,p) <$> lookupName name
 checkExpr p@PrimLit {..} =
   let t = typeOf lit
   in return (t, p {ty = t} :: Expr)
@@ -287,7 +309,7 @@ checkStm :: (MonadRepr s m) => Statement -> m Statement
 checkStm Assign {..} = do
   destTy <-
     trace ("Looking up type for " ++ pprrString dest) $
-    trackUsage Store dest lookupTy
+    trackUsage Store dest lookupName
   (t, val') <- checkExpr val
   _ <- unifyTypes Nothing destTy t
   return $ Assign dest val' loc
@@ -435,8 +457,8 @@ buildDeclTab ctx = foldM go M.empty
   where
     go m (VarDecl v@Variable {..}) = do
       defaultVal <- case val of
-        Just e  -> exprReduceToLiteral e
-        Nothing -> pure $ LitInt 0 noLoc
+        Just v' -> Just <$> exprReduceToLiteral v'
+        Nothing -> pure Nothing
       ensureUndef name m $
         return $ M.insert (toString name) (VarDef name v Unused defaultVal Void) m
     go m (ConstDecl c@Constant {..}) = do

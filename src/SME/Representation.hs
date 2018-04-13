@@ -49,6 +49,7 @@ import           Data.List.NonEmpty     (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty     as N
 import           Data.Loc               (Located, locOf, noLoc)
 import qualified Data.Set               as S
+import           Data.Vector            (Vector)
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
@@ -345,7 +346,7 @@ data Value
   deriving (Show, Eq)
 
 instance Ord Value
-  -- This instance is "bad" as it make an effort to implement a notion of
+  -- This instance is "bad" as it makes an effort to implement a notion of
   -- type-unsafe and somewhat arbitrary comparisons between SMEIL
   -- values. However, should comparisons between values of different types ever
   -- happen, it should be considered a type-checker bug.
@@ -393,7 +394,7 @@ mkVarDef i t el =
   , varDef =
       Variable {name = i, ty = t, val = Nothing, range = Nothing, loc = noLoc}
   , varState = Used
-  , varVal = LitInt 0 noLoc
+  , varVal = Nothing
   , ext = el
   }
 
@@ -403,7 +404,7 @@ data BaseDefType a
            , varDef   :: Variable
            , varState :: VarState
            --, varVa
-           , varVal   :: Literal
+           , varVal   :: Maybe Literal
            -- , varRange :: (Integer, Integer)
            , ext      :: a }
   | ConstDef { constName  :: Ident

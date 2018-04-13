@@ -47,6 +47,7 @@ import           Data.Graph.Inductive.PatriciaTree (Gr)
 import           Data.Graph.Inductive.Query.DFS    (scc, topsort)
 import qualified Data.HashMap.Strict               as M
 import           Data.Loc                          (noLoc)
+import           Data.Vector                       (fromList, (!), (//))
 
 import           Language.SMEIL.Syntax
 import           SME.API.Internal
@@ -223,7 +224,7 @@ runProcess p@ProcInst {..} = do
 evalStm :: Statement -> SimM ()
 evalStm Assign {..} = do
   r <- evalExpr val
-  setValueVtab (refOf dest) r
+  setValueVtab dest r
 evalStm If {..} = do
   c <- evalCondPair cond body
   mapM_ (uncurry evalCondPair) elif
@@ -263,7 +264,7 @@ evalExpr Unary {..} = do
   r <- evalExpr right
   evalUnOp unOp r
 evalExpr PrimName {..} =
-  getValueVtab (refOf name)
+  getValueVtab name
 evalExpr PrimLit {..} =
   pure $ toValue lit
 
@@ -341,7 +342,6 @@ propagateBus BusInst {..} = do
     (\case
         LocalChan {localRead = readRef, localWrite = writeRef} ->
           liftIO $
-          -- TODO: Calculate max value
           do
             --traceM ("Bus looks like " ++ show name)
             rw <- readIORef writeRef
@@ -394,7 +394,7 @@ labelInstances = mapUsedTopDefsM_ go
 class ToValue a where
   toValue :: a -> Value
 
-instance {-# OVERLAPPING #-} ToValue Literal where
+instance ToValue Literal where
   toValue l@LitInt {..} = IntVal intVal
   -- FIXME: This calls for changing the representation of floating point values in
   -- the AST to something completely accurate.
@@ -404,8 +404,27 @@ instance {-# OVERLAPPING #-} ToValue Literal where
   toValue LitTrue {}    = BoolVal True
   toValue LitFalse {}   = BoolVal False
 
-instance {-# OVERLAPPABLE #-} (Integral a) => ToValue a where
+instance ToValue Int where
   toValue v = IntVal $ fromIntegral v
+
+instance ToValue Integer where
+  toValue v = IntVal $ fromIntegral v
+
+instance ToValue Double where
+  toValue = DoubleVal
+
+instance ToValue Float where
+  toValue = SingleVal
+
+instance ToValue Bool where
+  toValue = BoolVal
+
+instance (ToValue a) => ToValue [a] where
+  toValue v = let list = fromList (map toValue v)
+              in ArrayVal (length v) list
+
+instance ToValue Value where
+  toValue = id
 
 mkBusInst :: Bool -> Ident -> BusShape -> Ref -> SimM BusInst
 mkBusInst exposed n bs busRef = do
@@ -445,14 +464,43 @@ mkBusInst exposed n bs busRef = do
                newIORef defVal))
         (unBusShape bs')
 
+mkInitialValue :: Typeness -> SimM Value
+mkInitialValue Untyped = throw $ InternalCompilerError "Untyped value in sim"
+mkInitialValue (Typed t) = go t
+  where
+    go Signed {} = return $ toValue (0 :: Int)
+    go Unsigned {} = return $ toValue (0 :: Int)
+    go Single {} = return $ toValue (0 :: Float)
+    go Double {} = return $ toValue (0 :: Double)
+    go Bool {} = return $ toValue False
+    go String {} = undefined
+    go Array {..} = do
+      len <-
+        case arrLength of
+          Just e ->
+            evalConstExpr e >>= \case
+              IntVal v -> pure (fromIntegral v)
+              _ -> throw $ InternalCompilerError "Non-integer array length"
+          Nothing -> throw $ InternalCompilerError "No array len" -- FIXME
+      toValue <$>
+        replicateM len (mkInitialValue (typeOf innerTy))
+
 -- | Creates a new vtable @ds@ from a list of definitions, adding to table
 -- passed as 'vtab'
 mkVtable :: [DefType] -> VTable -> SimM VTable
 mkVtable ds vtab = foldM go vtab ds
   where
-    go m VarDef {..} =
-      return $
-      M.insert varName (MutVal (toValue varVal) (absValue (toValue varVal))) m
+    go m VarDef {..} = do
+      (defaultValue, maxValue) <-
+        case varVal of
+          Just v ->
+            case toValue v of
+              a@(ArrayVal _ av) -> pure (a, maximum av)
+              v'                -> pure (v', v')
+          Nothing -> do
+            v <- mkInitialValue (typeOf varDef)
+            pure (v, v)
+      return $ M.insert varName (MutVal defaultValue (absValue maxValue)) m
     go m ConstDef {..} =
       return $ M.insert constName (ConstVal $ toValue constVal) m
     go m EnumFieldDef {..} =
@@ -474,6 +522,7 @@ ensureAcyclic g =
       let labs = (map . map) (lab (unInstGraph g)) a
           labs' = (map . map) (fromMaybe (Ident "unknown" noLoc)) labs
       in throw $
+         -- TODO: This should have its own error type
          InternalCompilerError
            ("Instantiation cycles formed by entities " ++
             unwords (map show labs'))
@@ -579,32 +628,83 @@ getInVtab i =
     Just v -> pure v
     Nothing -> throw $ InternalCompilerError "Value not found"
 
-setValueVtab :: Ref -> Value -> SimM ()
-setValueVtab (i :| []) v' =
-  getInVtab i >>= \case
-    MutVal _ maxV -> setInVtab i $ MutVal v' (max maxV (absValue v'))
-    BusVal _ -> throw $ InternalCompilerError "bus as value"
-    _ -> throw $ InternalCompilerError "immutable value"
-  --setInVtab i =<< valToSimRef v
-setValueVtab (i :| [i2]) v' =
-  getInVtab i >>= \case
-    BusVal v -> setBusVal i2 v v'
-    _ -> throw $ InternalCompilerError "compund name not a bus"
-setValueVtab _ _ = throw $ InternalCompilerError "Compound names not supported"
+setValueVtab :: Name -> Value -> SimM ()
+setValueVtab Name {parts = parts} v' = go parts
+  where
+    go (p :| []) =
+      case p of
+        IdentName {ident = i} ->
+          getInVtab i >>= \case
+            MutVal _ maxV -> setInVtab i $ MutVal v' (max maxV (absValue v'))
+            BusVal _ -> throw $ InternalCompilerError "bus as value"
+            _ -> throw $ InternalCompilerError "immutable value"
+        ArrayAccess {..} -> do
+          i <- ensureNamePartIdent namePart
+          idx <- ensureIndex index
+          getInVtab i >>= \case
+            MutVal (ArrayVal l v) m ->
+              if idx > (fromIntegral l - 1)
+                -- TODO: Dedicated error type
+                then throw $ InternalCompilerError "Index out of bounds"
+                else setInVtab i $
+                     MutVal
+                       (ArrayVal l (v // [(idx, v')]))
+                       (max v' (absValue m))
+            _ -> throw $ InternalCompilerError "Non-array value"
+    go (i :| [i2]) = do
+      i' <- ensureNamePartIdent i
+      i2' <- ensureNamePartIdent i2
+      getInVtab i' >>= \case
+        BusVal v -> setBusVal i2' v v'
+        _ -> throw $ InternalCompilerError "compund name not a bus"
+    go _ = throw $ InternalCompilerError "Compound names not supported"
 
-getValueVtab :: Ref -> SimM Value
-getValueVtab (i :| []) =
-  getInVtab i >>= \case
-    MutVal v _ -> pure v
-    ConstVal v -> pure v
-    _ -> throw $ InternalCompilerError "not readable"
-getValueVtab (i :| [i2]) =
-  getInVtab i >>= \case
-    BusVal v -> getBusVal i2 v
-    _ ->
-      throw $
-      InternalCompilerError "Only buses are accessible through compound names"
-getValueVtab _ = throw $ InternalCompilerError "Compound names not supported"
+-- FIXME: We should probably introduce an intermediate language to avoid
+-- handling this here
+ensureIndex :: ArrayIndex -> SimM Int
+ensureIndex (Index e) = evalExpr e >>= \case
+  IntVal v -> return (fromIntegral v)
+  _ -> -- TODO: Check this in the typechecker
+    throw $ InternalCompilerError "Non-integer array index"
+ensureIndex Wildcard = throw $ InternalCompilerError "Wildcard index"
+
+ensureNamePartIdent :: NamePart -> SimM Ident
+ensureNamePartIdent IdentName {..} = return ident
+ensureNamePartIdent ArrayAccess {} =
+  throw $ InternalCompilerError "ArrayAccess array NamePart"
+
+getValueVtab :: Name -> SimM Value
+getValueVtab Name {parts = parts} = go parts
+  where
+    go (p :| []) =
+      case p of
+        IdentName {ident = i} ->
+          getInVtab i >>= \case
+            MutVal v _ -> pure v
+            ConstVal v -> pure v
+            _ -> throw $ InternalCompilerError "not readable"
+        ArrayAccess {..} -> do
+          i <- ensureNamePartIdent namePart
+          idx <- ensureIndex index
+          getInVtab i >>= \case
+            MutVal (ArrayVal l v) _ ->
+              if idx > (fromIntegral l - 1)
+                -- TODO: Dedicated error type
+                then throw $ InternalCompilerError "Index out of bounds"
+                else return $ v ! fromIntegral idx
+            _ -> throw $ InternalCompilerError "Non-array value"
+    go (p :| [p2])
+      -- FIXME: This is a hack
+     = do
+      i <- ensureNamePartIdent p
+      i2 <- ensureNamePartIdent p2
+      getInVtab i >>= \case
+        BusVal v -> getBusVal i2 v
+        _ ->
+          throw $
+          InternalCompilerError
+            "Only buses are accessible through compound names"
+    go _ = throw $ InternalCompilerError "Compound names not supported"
 
 -- valAToSimRef :: Value -> SimM SimRef
 -- valToSimRef = undefined
@@ -630,8 +730,10 @@ getBusVal i BusInst {..} = do
   traceM $ "Reading bus val " ++ show i
   case M.lookup i chans of
     Just LocalChan {localRead = readEnd} -> liftIO $ readIORef readEnd
-    Just ExternalChan {extRead = readEnd} -> do
+    Just ExternalChan {extRead = readEnd, maxBusVal = maxBV} -> do
       res <- liftIO $ peek readEnd
+      -- TODO: Handle this on propagation rather than doing it on every read
+      liftIO $ modifyIORef maxBV (`max` res)
       trace ("Reading external channel " ++ show res ++ " " ++ show i) $
         return res
     Nothing -> throw $ InternalCompilerError "undefined bus channel"
