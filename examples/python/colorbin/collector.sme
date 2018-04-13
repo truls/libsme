@@ -20,7 +20,7 @@ proc collector (in image_input)
 {
     if (image_input.valid) {
         color = ((image_input.R * 299) +
-            (image_input.G * 287) +
+            (image_input.G * 587) +
             (image_input.B * 114)) / 1000;
 
         if (color > thresh_high) {
@@ -32,12 +32,17 @@ proc collector (in image_input)
         }
     }
 
-    if (image_input.valid) {
-        bin_count_out.valid = true;
-        countlow = 0;
-        countmed = 0;
-        counthigh = 0;
-    }
+    bin_count_out.low = countlow;
+    bin_count_out.med = countmed;
+    bin_count_out.high = counthigh;
+    // FIXME: Should be possible without the if
+    bin_count_out.valid = image_input.valid && image_input.last_pixel;
+    // if (image_input.valid && ) {
+    //     bin_count_out.valid = true;
+    //     countlow = 0;
+    //     countmed = 0;
+    //     counthigh = 0;
+    // }
 
 }
 

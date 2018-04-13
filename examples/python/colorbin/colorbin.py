@@ -23,7 +23,7 @@ class ImageInput(SimulationProcess):
     def setup(self, ins, outs, images=None):
         self.map_outs(outs, "data")
         if images is None:
-            images = ["image1.png"]#, "image2.jpg", "image3.png"]
+            images = ["image1.png", "image2.jpg", "image3.png"]
         images = list(map(lambda x: list(map(lambda y: set_tuple_el(y, 3, False),
                                              read_img(x))), images))
         for i in images:
@@ -40,7 +40,7 @@ class ImageInput(SimulationProcess):
             self.data["last_pixel"] = False
             self.data["valid"] = False
         else:
-            print("Sending values ", r, g, b, last)
+            #print("Sending values ", r, g, b, last)
             self.data["R"] = r
             self.data["G"] = g
             self.data["B"] = b
@@ -54,7 +54,8 @@ class CollectResults(SimulationProcess):
         self.res = res
 
     def run(self):
-        print("Got result ", self.result["high"])
+        # print("Got result ", self.result["low"], self.result["med"],
+        #       self.result["high"])
         if self.result["valid"]:
             self.res.append((self.result["low"], self.result["med"],
                                 self.result["high"]))
@@ -79,13 +80,13 @@ if __name__ == "__main__":
     sme = SME()
     result = []
     sme.network = ColorBin("", "ColorBin", result)
-    sme.network.clock(700)
+    sme.network.clock(352686)
 
     if len(result) > 0:
         result = functools.reduce(lambda x, y: (x[0] + y[0], x[1] + y[1],
                                                 x[2] + y[2]), result)
         print(result)
         plt.plot(result)
-        plt.show()
+        #plt.show()
     else:
         print("empty result")
