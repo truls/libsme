@@ -238,6 +238,20 @@ evalStm If {..} = do
           _ -> throw $ InternalCompilerError "Type error in if"
       when c (mapM_ evalStm ss)
       return c
+evalStm Switch {..} = do
+  val <- evalExpr value
+  res <- evalCase val cases
+  unless res $ fromMaybe (return ()) (mapM_ evalStm <$> defaultCase)
+  where
+    evalCase _ [] = return False
+    evalCase sVal ((expr, stms):ss) = do
+      e <- evalExpr expr
+      if e == sVal
+        then do
+          mapM_ evalStm stms
+          return True
+        else evalCase sVal ss
+
 
 -- | Evaluates an expression
 evalExpr :: Expr -> SimM Value
