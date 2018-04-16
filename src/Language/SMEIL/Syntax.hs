@@ -71,8 +71,8 @@ class Nameable a where
 
 type Ref = N.NonEmpty Ident
 
--- instance Located Ref where
---   locOf (
+instance Located Ref where
+  locOf r = foldl1 (<>) (N.map locOf r)
 
 instance Pretty Ref where
   ppr r = cat $ punctuate dot (map (\(Ident i _) -> ppr i) (N.toList r))

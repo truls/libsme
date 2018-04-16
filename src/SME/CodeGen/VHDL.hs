@@ -33,7 +33,7 @@ csvUtil = $(parseVHDLToQexp "rts/vhdl/csv_util.vhdl")
 ctx :: [V.ContextItem]
 ctx = [contextitems|library ieee;
                    use ieee.std_logic_1164.all;
-                   use ieee.std_numeriic.all;|]
+                   use ieee.std_numeric.all;|]
 
 genType :: Typeness -> V.SubtypeIndication
 genType (Typed (Unsigned Nothing _)) = [subtyind|integer|]
@@ -212,6 +212,7 @@ genPorts t = do
 -- If bus is declared within process, then name signal as bus-name_signal-name
 -- If signal refers to a bus declared in another process then name as
 -- bounding-proc_bus_name-signal_name
+  -- or maybe \net_name.proc_name[inst_name].sig_name\
 -- If signal refers to a bus imported via process paramaters, then name channels
 -- as param-name_signal-name
 genPorts' ::
@@ -281,8 +282,8 @@ genEntDec d ports = do
 
 -- genEntPorts :: TopDef -> GenM
 -- genEntPorts = undefinedfvc
-
-genVarDecls :: [DefType] -> GenM [V.ProcessDeclarativeItem]
+genVarDecls ::
+     [DefType] -> GenM [(V.ProcessDeclarativeItem, V.SequentialStatement)]
 genVarDecls dts =
   catMaybes <$>
   forM
@@ -295,12 +296,20 @@ genVarDecls dts =
                  Nothing -> [expr|0|]
          in return $
             Just
-              [procdecl|variable $ident:(toString varName) : $subtyind:(genType (typeOf varDef)) := $expr:dv;|]
-       ConstDef {..} ->
+              ( [procdecl|variable $ident:(toString varName) : $subtyind:(genType (typeOf varDef)) := $expr:dv;|]
+              , [seqstm|$ident:(toString varName) := $expr:dv|])
+       _ -> return Nothing)
+
+genConstDecls :: [DefType] -> GenM [V.ProcessDeclarativeItem]
+genConstDecls dts =
+  catMaybes <$> forM
+  dts
+  (\case
+    ConstDef {..} ->
          return $
          Just
            [procdecl|constant $ident:(toString constName) : $subtyind:(genType (typeOf constDef)) := $expr:(genLit constVal);|]
-       _ -> return Nothing)
+    _ -> return Nothing)
 
 genTopDef :: TopDef -> GenM [OutputFile]
 genTopDef p@ProcessTable {..} = do
@@ -309,6 +318,7 @@ genTopDef p@ProcessTable {..} = do
   ss <- mapM genStm stms
   ent <- genEntDec p ports
   decls <- genVarDecls (M.elems symTable)
+  consts <- genConstDecls (M.elems symTable)
   let contents =  [designfile|$contextitems:ctx
                              library work;
                              use work.sme_types.all;

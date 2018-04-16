@@ -1,44 +1,46 @@
 {-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE DuplicateRecordFields      #-}
 {-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TupleSections              #-}
-{-# LANGUAGE UndecidableInstances       #-}
 
 -- | SME network simulator
 
 module SME.Simulate
   ( simulate
   , SimEnv
+  , SimM (..)
   , newSteppingSim
   , procStep
   , busStep
+  , applyTypes
+  , finalizeSim
   ) where
 
 import           Control.Exception                 (throw)
-import           Control.Monad                     (foldM, forM_, mapM_,
-                                                    replicateM, unless, void,
-                                                    when, zipWithM)
+import           Control.Monad                     (foldM, forM, forM_, mapM_,
+                                                    replicateM, replicateM_,
+                                                    unless, void, when,
+                                                    zipWithM)
 import           Data.Bits                         (complement, shiftL, shiftR,
                                                     xor, (.&.), (.|.))
 import           Data.IORef                        (IORef, modifyIORef,
                                                     newIORef, readIORef,
                                                     writeIORef)
-import           Data.List                         (nub)
+import           Data.List                         (groupBy, nub, sortBy)
 import           Data.List.NonEmpty                (NonEmpty (..))
 import qualified Data.List.NonEmpty                as N
-import           Data.Maybe                        (catMaybes, fromMaybe)
+import           Data.Maybe                        (catMaybes, fromMaybe,
+                                                    mapMaybe)
 
 import           Control.Concurrent.Async          (async, mapConcurrently,
                                                     wait)
 import           Control.Monad.Except              (MonadError)
-import           Control.Monad.Extra               (mapMaybeM)
+import           Control.Monad.Extra               (concatMapM, mapMaybeM)
 import           Control.Monad.IO.Class            (MonadIO, liftIO)
 import           Control.Monad.State               (MonadState, get, gets,
                                                     modify)
@@ -50,7 +52,9 @@ import           Data.Loc                          (noLoc)
 import           Data.Vector                       (fromList, (!), (//))
 
 import           Language.SMEIL.Syntax
+import           Language.SMEIL.Util
 import           SME.API.Internal
+import           SME.CsvWriter
 import           SME.Error
 import           SME.Representation
 
@@ -140,6 +144,7 @@ data SimExt
            , puppetMode  :: Maybe SmeCtxPtr
            , simProcs    :: [IORef ProcInst]
            , simBuses    :: [BusInst]
+           , csvWriter   :: Maybe CsvChan
            -- ^ Set to true if we are run as a library
            }
            --, netGraph    ::  NetGraph}
@@ -170,9 +175,15 @@ data BusChan
   deriving (Eq)
 
 data BusInst  = BusInst
-  { chans :: M.HashMap Ident BusChan
-  , ref   :: Ref -- ^Reference to the bus that this was instantiated from
+  { chans   :: M.HashMap Ident BusChan
+  , ref     :: Ref -- ^Reference to the bus that this was instantiated from
+  , readers :: [Int] -- ^ Processes connected to the read end of the bus
+  , writers :: [Int] -- ^ Processes connected to the write end of the bus
+  -- TODO: Implement the readers/writers thing and us it to build a graph
   } deriving (Eq)
+
+instance Show BusInst where
+  show BusInst {ref = ref} = "BusInst: " ++ show ref
 
 -- data ParamVal
 
@@ -180,13 +191,10 @@ data BusInst  = BusInst
 --                 { IORef
 --  }
 
-data InstState = Phantom | Actual
-  deriving (Eq, Show)
-
 data ProcInst = ProcInst
-  { instState   :: InstState
+  {
   --, params    :: [(Ref, ParamVal)]
-  , valueTab    :: VTable
+   valueTab     :: VTable
   , stmts       :: [Statement]
   , instNodeId  :: Int
   , synchronous :: Bool
@@ -333,25 +341,27 @@ evalUnOp _ _                      =
   throw $ InternalCompilerError "Unsupported types for unary operator"
 
 
-
-propagateBus :: BusInst -> SimM ()
-propagateBus BusInst {..} = do
+propagateBus :: BusInst -> SimM  [Value]
+propagateBus BusInst {..}
+  --liftIO $ putStrLn ("Propagating bus " ++ show ref)
+ = do
   let vs = M.elems chans
-  forM_
+  forM
     vs
     (\case
-        LocalChan {localRead = readRef, localWrite = writeRef} ->
-          liftIO $
-          do
+       LocalChan {localRead = readRef, localWrite = writeRef} ->
+         liftIO $
             --traceM ("Bus looks like " ++ show name)
-            rw <- readIORef writeRef
-            rv <- readIORef readRef
-            writeIORef readRef rw
-            putStrLn ("Bus read value was " ++ show rv)
-        ExternalChan {} ->
+          do
+           rw <- readIORef writeRef
+           rv <- readIORef readRef
+           writeIORef readRef rw
+           putStrLn ("Bus read value was " ++ show rv)
+           return rw
+       ExternalChan {extRead = readEnd}
           -- External channels are propagated by the c-wrapper
-          return ()
-    )
+        -> liftIO $ peek readEnd)
+--{-# INLINE propagateBus #-}
 
 -- | Returns a new and globally unique integer every time its called.
 getFreshLabel :: SimM Int
@@ -395,14 +405,14 @@ class ToValue a where
   toValue :: a -> Value
 
 instance ToValue Literal where
-  toValue l@LitInt {..} = IntVal intVal
+  toValue LitInt {..}  = IntVal intVal
   -- FIXME: This calls for changing the representation of floating point values in
   -- the AST to something completely accurate.
-  toValue LitFloat {}   = undefined
-  toValue LitArray {}   = undefined
-  toValue LitString {}  = undefined
-  toValue LitTrue {}    = BoolVal True
-  toValue LitFalse {}   = BoolVal False
+  toValue LitFloat {}  = undefined
+  toValue LitArray {}  = undefined
+  toValue LitString {} = undefined
+  toValue LitTrue {}   = BoolVal True
+  toValue LitFalse {}  = BoolVal False
 
 instance ToValue Int where
   toValue v = IntVal $ fromIntegral v
@@ -426,6 +436,25 @@ instance (ToValue a) => ToValue [a] where
 instance ToValue Value where
   toValue = id
 
+-- | Get the Type of a Value. Will try to "adapt" the type to the given
+-- Typeness parameter such that it, e.g., returns signed types if existing type
+-- is signed
+valueToType :: Value -> Typeness -> Typeness
+valueToType (IntVal v) (Typed Signed {..}) =
+  Typed $ Signed (Just (bitSize v)) loc
+valueToType (IntVal v) (Typed Unsigned {..}) =
+  Typed $ Unsigned (Just (bitSize v)) loc
+valueToType (IntVal v) _ =
+  -- FIXME: What to do here? Either we fail since an internal invariant has been
+  -- violated or we stick with the current implementation
+  typeOf v
+valueToType (BoolVal _) t = t
+valueToType (SingleVal _) t = t
+valueToType (DoubleVal _) t = t
+valueToType (ArrayVal _ v) t = valueToType (maximum v) t
+
+-- | Creates a bus instance either locally or in the C-interface depending on if
+-- the bus is stored locally or not.
 mkBusInst :: Bool -> Ident -> BusShape -> Ref -> SimM BusInst
 mkBusInst exposed n bs busRef = do
   chans <-
@@ -435,11 +464,12 @@ mkBusInst exposed n bs busRef = do
           busPtr <- mkExtBus ptr (toString n) -- liftIO $ apiCallWrap $ busFun (toString n)
           toExtChans exposed busPtr bs
       Nothing -> liftIO $ toBusChans bs
-  return $ BusInst (M.fromList chans) busRef
+  return $ BusInst (M.fromList chans) busRef [] []
   where
     toExtChans :: Bool -> BusPtr -> BusShape -> IO [(Ident, BusChan)]
     toExtChans isPuppet bptr bs' =
-      mapM
+      forM
+        (unBusShape bs')
         (\case
            (i, (Typed ty, lit)) ->
              let defVal = fromMaybe (toValue (0 :: Integer)) (toValue <$> lit)
@@ -452,7 +482,6 @@ mkBusInst exposed n bs busRef = do
                   else LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
                        newIORef defVal
            _ -> throw $ InternalCompilerError "Illegal bus chan")
-        (unBusShape bs')
     toBusChans :: BusShape -> IO [(Ident, BusChan)]
     toBusChans bs' =
       mapM
@@ -569,6 +598,8 @@ getNetworkEntry = do
       insts <- instantiates (nameOf a) (M.elems symtab)
       return $ map ((nodeId (topExt a), nameOf a), ) insts
 
+-- | Run the action @act@ setting the current vTable to @vtab@. Returns the
+-- modified vTable and the result of the action
 withVtable :: VTable -> SimM a -> SimM (VTable, a)
 withVtable vtab act = do
   e <- gets (ext :: SimEnv -> SimExt)
@@ -579,9 +610,11 @@ withVtable vtab act = do
   modify (\x -> x {ext = e' {curVtable = prev}} :: SimEnv)
   return (curVtable e', res)
 
+-- | Same as withVTable, but doesn't return the updated vTable.
 withVtable_ :: VTable -> SimM a -> SimM a
 withVtable_ vtab act = snd <$> withVtable vtab act
 
+-- | Return the current vTable
 getCurVtable :: SimM VTable
 getCurVtable = curVtable <$> gets (ext :: SimEnv -> SimExt)
 
@@ -628,6 +661,7 @@ getInVtab i =
     Just v -> pure v
     Nothing -> throw $ InternalCompilerError "Value not found"
 
+-- | Sets a value in current VTab
 setValueVtab :: Name -> Value -> SimM ()
 setValueVtab Name {parts = parts} v' = go parts
   where
@@ -773,6 +807,8 @@ evalConstExpr PrimName {name = Name {..}} =
 -- programs like in the final form of addone.sme, since that is similar to the
 -- normalized form that we want to end up with.
 
+-- *** Network instantiation and initialization
+
 newtype ProcLink = ProcLink (Int, Int, String, BusInst)
 
 data InstTree = InstTree
@@ -826,8 +862,7 @@ instEntity st ProcessTable {stms = stms, procName = name, symTable = symTable} =
   newLab <- getFreshLabel
   let inst =
         ProcInst
-        { instState = Phantom
-        , valueTab = vtab
+        { valueTab = vtab
         , stmts = stms
         , instNodeId = newLab
         , fromEnt = name
@@ -857,6 +892,7 @@ mkInst InstDef { instantiated = instantiated
  = do
   inst <- lookupTopDef instantiated
   let parList = (params :: TopDef -> ParamList) inst
+  -- Evaluate the parameter values
   paramVals <-
     catMaybes <$>
     zipWithM
@@ -864,14 +900,14 @@ mkInst InstDef { instantiated = instantiated
          case parType of
            ConstPar _ ->
              Just . (parName, ) <$>
-             (MutVal <$> evalConstExpr parVal <*>
-              (absValue <$> evalConstExpr parVal))
+             (ConstVal <$> evalConstExpr parVal)
            BusPar {} -> pure Nothing)
       parList
       actual
   Just . (instName, ) <$> instEntity (M.fromList paramVals) inst
 mkInst _ = pure Nothing
 
+-- | Adds actual bus references to the vtable of a process instance
 wireInst :: (Ident, ProcInst) -> SimM ProcInst
 wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
   --traceM "Entered wireInst"
@@ -897,14 +933,17 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
           actual
       let vtab = (valueTab :: ProcInst -> VTable) procInst
           vtab' = foldr (uncurry M.insert) vtab paramVals
-      return $ procInst {instState = Actual, valueTab = vtab'}
+      return $ procInst {valueTab = vtab'}
     _ -> throw $ InternalCompilerError "Expected instDef"
 
 instsToMap :: [ProcInst] -> M.HashMap Int ProcInst
 instsToMap = foldr (\p@ProcInst {..} m -> M.insert instNodeId p m) M.empty
 
+-- | Sets up the simulation sets up the simulation environment
 setupSimEnv :: Maybe SmeCtxPtr -> SimM ()
 setupSimEnv ptr = do
+  csv <- liftIO $ mkCsvWriter "trace.csv"
+  --csv <- Nothing
   modify
     (\x ->
        x
@@ -916,6 +955,7 @@ setupSimEnv ptr = do
            , puppetMode = ptr
            , simProcs = []
            , simBuses = []
+           , csvWriter = Just csv
            }
        } :: SimEnv)
   labelInstances
@@ -974,8 +1014,18 @@ procStep env =
 
 busStep :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
 busStep env =
-  let act = mapM_ propagateBus =<< gets (simBuses . envExt)
-  in runStep env act
+  runStep env $ do
+    res <- concatMapM propagateBus =<< gets (simBuses . envExt)
+    gets (csvWriter . envExt) >>= \case
+      Just a -> liftIO $ writeCsvLine a res
+      Nothing -> return ()
+
+finalizeSim :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
+finalizeSim env =
+  runStep env $
+  gets (csvWriter . envExt) >>= \case
+    Just a -> liftIO $ finalizeCsv a
+    Nothing -> return ()
 
 toSimEnv :: Env -> SimEnv
 toSimEnv = (<$) EmptyExt
@@ -983,13 +1033,90 @@ toSimEnv = (<$) EmptyExt
 runSimM :: Env -> SimM a -> IO (Either TypeCheckErrors a, SimEnv)
 runSimM env act = runReprM (toSimEnv env) (unSimM act)
 
-simulate :: Env -> IO () --(Either TypeCheckErrors SimEnv)
-simulate e = void $ runSimM e (setupSimEnv Nothing)
+simulate :: Int -> Env -> IO () --(Either TypeCheckErrors SimEnv)
+simulate its e =
+  void $
+  runSimM e $ do
+    setupSimEnv Nothing
+    procs <- gets (simProcs . envExt)
+    buses <- gets (simBuses . envExt)
+    replicateM_ its (runSimulation procs buses)
+    gets (csvWriter . envExt) >>= \case
+      Just a -> liftIO $ finalizeCsv a
+      Nothing -> return ()
   -- (res, env) <-
   -- return $
   --   case res of
   --     Right () -> Right env
   --     Left l   -> Left l
+  -- TODO: Theres a lot of duplication i the following:
+chanValList :: [BusInst] -> IO [((Ref, Ident), Value)]
+chanValList b =
+  maxInGroup . sortBy (\(x, _) (y, _) -> compare x y) <$> concatMapM go b
+  where
+    go BusInst {..} =
+      let vals = M.elems chans
+      in map (\(n, v) -> ((ref, n), v)) <$> mapM chanMaxVal vals
+
+-- TODO: Replace by groupBy/maximumBY
+maxInGroup :: (Eq a, Ord b) => [(a, b)] -> [(a, b)]
+maxInGroup []         = []
+maxInGroup [i]        = [i]
+maxInGroup (i1:i2:is) = go i1 (i2 : is)
+  where
+    go c@(n1, v1) (e@(n2, v2):es)
+      | n1 /= n2  = c : go e es
+      | v2 > v1   = go e es
+      | otherwise = go c es
+    go c [] = [c]
+
+chanMaxVal :: BusChan -> IO (Ident, Value)
+chanMaxVal LocalChan {..}    = (name, ) <$> readIORef maxBusVal
+chanMaxVal ExternalChan {..} = (name, ) <$> readIORef maxBusVal
+
+updateBusTypes :: [BusInst] -> SimM ()
+updateBusTypes bs = do
+  maxvals <- liftIO $ chanValList bs
+  maxtypes <-
+    forM
+      maxvals
+      (\((r, i), v) -> do
+         t <- lookupTy (r <> refOf i)
+         let t' = valueToType v t
+         return ((r, i), t'))
+  forM_ maxtypes (\((r, i), t) -> updateDef r (setBusChanType i t))
+
+varValList :: [ProcInst] -> [(Ref, Value)]
+varValList ps =
+  maxInGroup . sortBy (\(x, _) (y, _) -> compare x y) $ concatMap go ps
+  where
+    go ProcInst {..} =
+      mapMaybe (uncurry (simRefMaxVal fromEnt)) (M.toList valueTab)
+    simRefMaxVal r i MutVal {maxVal = maxVal} =
+      Just (refOf i <> refOf r, maxVal)
+    simRefMaxVal _ _ _ = Nothing
+
+updateVarTypes :: [ProcInst] -> SimM ()
+updateVarTypes ps = do
+  let maxvals = varValList ps
+  maxtypes <-
+    forM
+      maxvals
+      (\(r, v) -> do
+         t <- lookupTy r
+         let t' = valueToType v t
+         return (r, t'))
+  forM_ maxtypes $ \(r, t) -> updateDef r (setType t)
+
+applyTypes :: SimM ()
+applyTypes = do
+  procs' <- gets (simProcs . envExt)
+  procs <- liftIO $ mapM readIORef procs'
+  buses <- gets (simBuses . envExt)
+  updateVarTypes procs
+  updateBusTypes buses
+  return ()
+
 
 
 -- We initialize a entity content by creating a value table initialized with

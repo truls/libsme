@@ -99,6 +99,6 @@ compile conf = do
   tyEnv <- case res of
             Left e  -> throw $ CompilerError e
             Right r -> pure r
-  simulate tyEnv
+  simulate 10 tyEnv
   --when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
   --genOutput (outputDir conf) VHDL tyEnv

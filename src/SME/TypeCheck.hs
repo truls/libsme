@@ -33,6 +33,7 @@ import           Data.Monoid                 ((<>))
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
+import           Language.SMEIL.Util
 import           SME.Error
 import           SME.Representation
 import           SME.Warning
@@ -93,40 +94,6 @@ lookupBus r =
   in lookupDef r >>= \case
        b@BusDef {} -> pure b
        _ -> throw $ ExpectedBus (N.head ref)
-
-lookupTy ::
-     (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
-lookupTy r = do
-  traceM "LookupTy entered"
-  (rest, def) <- lookupDef' r
-  res <- setTypeLoc (locOf r) <$> getType rest def
-  return $
-    trace ("lookupTy for " ++ show (refOf r) ++ " return " ++ show res) res
-  where
-    getType _ VarDef {..} = pure $ typeOf varDef
-    getType _ ConstDef {..} = pure $ typeOf constDef
-    getType [rest] BusDef {..} = fst <$> lookupBusShape busShape rest
-    getType _ BusDef {} = trace "throw busdef" $ throw $ BusReferencedAsValue r
-    getType _ FunDef {} = undefined --pure $ typeOf funcDef
-    getType _ EnumDef {..} = throw $ ReferencedAsValue enumDef
-    getType _ EnumFieldDef {..} = pure $ typeOf fieldValue
-    getType _ InstDef {..} = throw $ ReferencedAsValue instDef
-    getType [] ParamDef {..} =
-      case paramType of
-        ConstPar t  -> pure t
-        BusPar {..} -> throw $ BusReferencedAsValue r
-    getType [rest] ParamDef {..} =
-      case paramType of
-        ConstPar _ -- TODO: Better error message
-         -> trace "ParamType " $ throw $ UndefinedName r
-        BusPar {..} -> fst <$> lookupBusShape busShape rest
-    getType _ ParamDef {} -- TODO: Better error message
-     = trace "ParamDef" $ throw $ UndefinedName r
-    lookupBusShape busShape rest =
-      -- TODO: Maybe use a map for busShape
-      case lookup rest (unBusShape busShape) of
-        Just a  -> pure a
-        Nothing -> trace "lookupBusShape" $ throw $ UndefinedName r
 
 hasArrayAccess :: Name -> Bool
 hasArrayAccess Name {..} =
@@ -199,7 +166,7 @@ unifyTypes ::
 unifyTypes expected t1 t2 = do
   res <- go t1 t2
   case expected of
-    Just t -> do
+    Just t ->
       unifyTypes Nothing (Typed t) res
       -- unless (Typed t == res) $ throw $ TypeMismatchError (Typed t) res
       -- return (Typed t)
@@ -254,11 +221,6 @@ flipSign (Typed t) = Typed $ go t
     go (Unsigned (Just l) loc) = Signed (Just (l + 1)) loc
     go t1 = t1
 flipSign Untyped = Untyped
-
--- | Sets the location of type
-setTypeLoc :: Loc -> Typeness -> Typeness
-setTypeLoc _ Untyped     = Untyped
-setTypeLoc loc (Typed t) = Typed (t { loc = fromLoc loc } :: Type)
 
 -- | Check expression and update references as needed
 checkExpr :: (MonadRepr s m) => Expr -> m (Typeness, Expr)
@@ -330,7 +292,6 @@ checkStm If {..} = do
   return $ If cond' body' elif' els' loc
 checkStm For {..}
   --varTy <- lookupTy var
-  -- TODO: Bind variable in environment typed depending on ranges of expresions
  = do
   (fromTy, from') <- checkExpr from
     -- TODO: Unless fromTy is int

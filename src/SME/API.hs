@@ -6,14 +6,16 @@ module SME.API
   (
   ) where
 
-import           Control.Exception  (try, tryJust)
+import           Control.Exception  (Exception, try, tryJust)
 import           Foreign.C.String   (CString, peekCString, withCString)
 import           Foreign.StablePtr  (StablePtr, deRefStablePtr, freeStablePtr,
                                      newStablePtr)
 
 import           SME.API.Internal
+import           SME.CodeGen
 import           SME.Error
 import           SME.ImportResolver
+import           SME.Representation
 import           SME.Simulate
 import           SME.Stages
 import           SME.TypeCheck
@@ -34,6 +36,10 @@ foreign export ccall "hs_run_procs"
   runProcs :: SimCtxPtr -> IO Bool
 foreign export ccall "hs_sme_load_file"
   loadFile :: SmeCtxPtr -> CString -> IO Bool
+foreign export ccall "hs_finalize"
+  finalize :: SimCtxPtr -> IO Bool
+foreign export ccall "hs_gen_code"
+  genCode :: SimCtxPtr -> CString -> IO Bool
 
 foreign import ccall "sme_set_sim_state"
   sme_set_sim_state :: SmeCtxPtr -> SimCtxPtr -> IO ()
@@ -59,12 +65,11 @@ loadFile c f = do
       setError c (show (e :: ImportingError)) --(renderError nameMap e)
       return False
     Right (df, nameMap) -> do
-      res <-
-        tryJust
-          (\(e :: TypeCheckErrors) -> Just $ renderError nameMap e)
-          (typeCheck df)
+      res <- try (typeCheck df)
       case res of
-        Left e -> trace "first res left" $ setError c e >> return False
+        Left e ->
+          trace "first res left" $
+          setError c (renderError nameMap (e :: TypeCheckErrors)) >> return False
         Right r ->
           trace "first res right" $
           newSteppingSim r c >>= \case
@@ -106,8 +111,23 @@ runStep c f = do
         setError (libCtx ctx) e
         return False
 
+genCode :: SimCtxPtr -> CString -> IO Bool
+genCode c n = do
+  ctx <- deRefStablePtr c
+  freeStablePtr c
+  s' <- peekCString n
+  try (genOutput s' VHDL (Void <$ (simState ctx))) >>= \case
+    Left e -> do
+      setError (libCtx ctx) (show (e :: TypeCheckErrors))
+      return False
+    Right _ -> return True
+
+
 propagateBuses :: SimCtxPtr -> IO Bool
 propagateBuses c = runStep c busStep
 
 runProcs :: SimCtxPtr -> IO Bool
 runProcs c = runStep c procStep
+
+finalize :: SimCtxPtr -> IO Bool
+finalize c = runStep c finalizeSim

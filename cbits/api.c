@@ -15,6 +15,8 @@
 extern HsBool hs_propagate_buses(HsStablePtr a1);
 extern HsBool hs_run_procs(HsStablePtr a1);
 extern HsBool hs_sme_load_file(HsPtr a1, HsPtr a2);
+extern HsBool hs_finalize(HsStablePtr a1);
+extern HsBool hs_gen_code(HsStablePtr a1, HsPtr a2);
 
 
 #include "uthash.h"
@@ -52,7 +54,8 @@ static void
 sme_library_init(void)
 {
   int argc = 2;
-  char* argv[] = { "+RTS", "-A32m", NULL };
+  //char* argv[] = { "+RTS", "-A32m", NULL };
+  char* argv[] = { "+RTS", "-A256m", NULL };
   char **pargv = argv;
   hs_init(&argc, &pargv);
   //sme_init();
@@ -289,6 +292,20 @@ sme_tick(SmeCtx* ctx)
 {
   //printf("Called tick\n");
   return hs_run_procs(ctx->sim_state);
+}
+
+bool
+sme_finalize(SmeCtx* ctx)
+{
+  //printf("Called tick\n");
+  return hs_finalize(ctx->sim_state);
+}
+
+bool
+sme_gen_code(SmeCtx* ctx, const char* file)
+{
+  //printf("Called tick\n");
+  return hs_gen_code(ctx->sim_state, (HsPtr) file);
 }
 
 void

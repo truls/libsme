@@ -35,6 +35,9 @@ module SME.Representation
   , mkVarDef
   , lookupEx
   , absValue
+  , setType
+  , setBusChanType
+  , lookupTy
   ) where
 
 import           Control.Exception      (throw)
@@ -53,6 +56,7 @@ import           Data.Vector            (Vector)
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
+import           Language.SMEIL.Util
 import           SME.Error
 
 --import           Debug.Trace            (trace, traceM)
@@ -193,6 +197,39 @@ class ( Monad m
         defs = M.elems tab
     res <- mapM f defs
     updateTopDef d (\x -> x {symTable = M.fromList (zip ks res)})
+  -- | Given a global reference, applies the function to update the definition.
+  updateDefM ::
+       (References a, Located a, Pretty a)
+    => a
+    -> (BaseDefType s -> m (BaseDefType s))
+    -> m ()
+  updateDefM d f
+    -- Lookup whole reference, lookup definition, then update topDef doing a map
+    -- insert with the update definition
+   = do
+    def <- lookupDef d
+    let top = N.head (refOf d)
+        name = nameOf def
+    res <- f def
+    updateTopDef
+      top
+      (\x -> x {symTable = M.insert (toString name) res (symTable x)})
+  -- updateDef ::
+  --      (References a, Located a, Pretty a)
+  --   => a
+  --   -> (BaseDefType s -> (BaseDefType s))
+  --   -> m ()
+  -- updateDef d f
+  --   -- Lookup whole reference, lookup definition, then update topDef doing a map
+  --   -- insert with the update definition
+  --  = do
+  --   def <- lookupDef d
+  --   let top = N.head (refOf d)
+  --       name = nameOf def
+  --   let res = f def
+  --   updateTopDef
+  --     top
+  --     (\x -> x {symTable = M.insert (toString name) res (symTable x)})
   mapDefsM ::
        (References a, Located a, Pretty a)
     => a
@@ -474,6 +511,60 @@ instance Nameable (BaseDefType a) where
   nameOf InstDef {..}      = instName
   nameOf ParamDef {..}     = paramName
 
+-- | Sets the type of a definition when possible
+setType :: Typeness -> BaseDefType a -> BaseDefType a
+setType t d@VarDef {varDef = v@Variable {}} = d { varDef = v { ty = t }}
+setType _ d                                 = d
+
+setBusChanType :: Ident -> Typeness -> BaseDefType a -> BaseDefType a
+setBusChanType ident ty b@BusDef {busShape = shape} =
+  let shape' =
+        BusShape $
+        map
+          (\o@(i, (_, l)) ->
+             if ident == i
+               then (i, (ty, l))
+               else o)
+          (unBusShape shape)
+  in b {busShape = shape'}
+
+lookupTy ::
+     (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
+lookupTy r = do
+  traceM "LookupTy entered"
+  (rest, def) <- lookupDef' r
+  res <- setTypeLoc (locOf r) <$> getType rest def
+  return $
+    trace ("lookupTy for " ++ show (refOf r) ++ " return " ++ show res) res
+  where
+    getType _ VarDef {..} = pure $ typeOf varDef
+    getType _ ConstDef {..} = pure $ typeOf constDef
+    getType [rest] BusDef {..} = fst <$> lookupBusShape busShape rest
+    getType _ BusDef {} = trace "throw busdef" $ throw $ BusReferencedAsValue r
+    getType _ FunDef {} = undefined --pure $ typeOf funcDef
+    getType _ EnumDef {..} = throw $ ReferencedAsValue enumDef
+    getType _ EnumFieldDef {..} = pure $ typeOf fieldValue
+    getType _ InstDef {..} = throw $ ReferencedAsValue instDef
+    getType [] ParamDef {..} =
+      case paramType of
+        ConstPar t  -> pure t
+        BusPar {..} -> throw $ BusReferencedAsValue r
+    getType [rest] ParamDef {..} =
+      case paramType of
+        ConstPar _ -- TODO: Better error message
+         -> trace "ParamType " $ throw $ UndefinedName r
+        BusPar {..} -> fst <$> lookupBusShape busShape rest
+    getType _ ParamDef {} -- TODO: Better error message
+     = trace "ParamDef" $ throw $ UndefinedName r
+    lookupBusShape busShape rest =
+      -- TODO: Maybe use a map for busShape
+      case lookup rest (unBusShape busShape) of
+        Just a  -> pure a
+        Nothing -> trace "lookupBusShape" $ throw $ UndefinedName r
+
+
+
+-- TODO: Maybe change this to a map
 newtype BusShape = BusShape
   { unBusShape :: [(Ident, (Typeness, Maybe Literal))]
   } deriving (Eq, Show)

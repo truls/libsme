@@ -114,6 +114,10 @@ Value* sme_get_read_val(SmeCtx* ctx, const char* bus, const char* chan);
 **/
 bool sme_tick(SmeCtx* ctx);
 
+bool sme_finalize(SmeCtx* ctx);
+
+bool sme_gen_code(SmeCtx* ctx, const char* file);
+
 /**
    Same as sme_tick except that this function will start a simulation for one
    clock tick and return immediately. Use sme_tick_await to wait for the cycle
