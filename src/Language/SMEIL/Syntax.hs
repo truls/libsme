@@ -7,7 +7,6 @@
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
-{-# LANGUAGE UndecidableInstances  #-}
 
 module Language.SMEIL.Syntax
   ( DesignFile(..)
@@ -635,10 +634,16 @@ instance Semigroup Ident where
   (Ident a loca) <> (Ident b locb) = Ident (a <> b) (loca <> locb)
 
 -- Instances for standard number types
-instance {-# OVERLAPPABLE #-} (Integral a) => Typed a where
-  typeOf intVal
-    | intVal < 0 = Typed $ Signed (Just (fromIntegral $ bitSize intVal)) noLoc
-    | otherwise = Typed $ Unsigned (Just (fromIntegral $ bitSize intVal)) noLoc
+instance Typed Integer where
+  typeOf = typeOfInt
+
+instance Typed Int where
+  typeOf = typeOfInt
+
+typeOfInt :: (Integral a) => a -> Typeness
+typeOfInt intVal
+  | intVal < 0 = Typed $ Signed (Just (fromIntegral $ bitSize intVal)) noLoc
+  | otherwise = Typed $ Unsigned (Just (fromIntegral $ bitSize intVal)) noLoc
 
 instance Typed Double where
   typeOf _ = Typed $ Double noLoc
