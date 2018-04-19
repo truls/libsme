@@ -238,19 +238,25 @@ evalStm Assign {..} = do
   r <- evalExpr val
   setValueVtab dest r
 evalStm If {..} = do
-  c <- evalCondPair cond body
-  mapM_ (uncurry evalCondPair) elif
-  case els of
-    Nothing -> return ()
-    Just ss -> unless c (mapM_ evalStm ss)
+  c <- evalCondPair [(cond, body)]
+  unless c $ do
+    c' <- evalCondPair elif
+    case els of
+      Nothing -> return ()
+      Just ss -> unless c' (mapM_ evalStm ss)
   where
-    evalCondPair e ss = do
+    evalCondPair ((e, ss):conds) = do
       c <-
         evalExpr e >>= \case
           (BoolVal v) -> pure v
           _ -> throw $ InternalCompilerError "Type error in if"
-      when c (mapM_ evalStm ss)
-      return c
+      if c
+        then do
+          mapM_ evalStm ss
+          return c
+        else evalCondPair conds
+    evalCondPair [] = return False
+
 evalStm Switch {..} = do
   val <- evalExpr value
   res <- evalCase val cases
