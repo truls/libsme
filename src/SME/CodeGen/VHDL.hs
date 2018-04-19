@@ -366,9 +366,9 @@ genTB entName (ins, outs) =
       valAssert (y, _) (x, ty)= let im = genImageFun y ty
                                     im2 = genImageFun x ty in
         [seqstm|assert ($ident:y = $ident:x)
-    report $slit:("Unexpected value of " ++ y ++ " in cycle ") &
+    report $slit:("Unexpected value of " ++ x ++ " in cycle ") &
     integer'image(clockcycle) & ". Actual value was: " &
-    $expr:im & " but expected " & $expr:im2
+    $expr:im2 & " but expected " & $expr:im
     severity Error;
 end if;|]
       valAsserts = zipWith valAssert outTmpVals outs
