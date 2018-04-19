@@ -29,11 +29,8 @@ data SMEInteger = SMEInteger
   { negative :: Bool
   , len :: Word
   , addr :: Ptr CChar
-  , valPtr :: Ptr SMEInteger
+  , _valPtr :: Ptr SMEInteger
   }
-
-data SMEInt
-type SMEIntPtr = Ptr SMEInt
 
 data Signedness = Signed | Unsigned
   deriving (Eq)
@@ -70,11 +67,11 @@ instance Storable SMEInteger where
 
   poke p value = do
     -- All other fields are non modifiable from here
-    {# set SMEInt.negative #} p (negative value)
+    {# set SMEInt.negative #} p (if (negative value) then 1 else 0)
   {-# INLINE poke #-}
 
   peek p =
-    SMEInteger <$> {# get SMEInt.negative #} p
+    SMEInteger <$> ((/= 0) <$> {# get SMEInt.negative #} p)
                <*> (fromIntegral <$> {# get SMEInt.len #} p)
                <*> {# get SMEInt.num #} p
                <*> pure p
@@ -84,15 +81,12 @@ instance Storable SMEInteger where
 pokeIntVal :: Signedness -> (t -> IO (Ptr ())) -> t -> Integer -> IO ()
 pokeIntVal signedness f p val = do
   let bytes = if val == 0 then 1 else W# (sizeInBaseInteger val 256#)
-  --putStrLn ("Got numstring size " ++ show bytes)
   iptr' <- f p
   let iptr = (castPtr :: Ptr () -> Ptr SMEInteger) iptr'
   sme_integer_resize iptr bytes
   intRep <- peek iptr
   let !(Ptr unpackedAddr) = addr intRep
-  --putStrLn ("Writing int to val " ++ show (val))
   _ <- exportIntegerToAddr val unpackedAddr 0#
-  --putStrLn ("Wrote bytes " ++ show res)
   poke iptr (intRep { negative = ((signedness == Signed) && (val < 0)) })
 {-# INLINE pokeIntVal #-}
 
@@ -103,7 +97,6 @@ peekIntVal signedness f p = do
   let !(W# unpackedLen) = len intRep
   let !(Ptr unpackedAddr) = addr intRep
   res <- importIntegerFromAddr unpackedAddr unpackedLen 0#
-  --putStrLn ("Negative is " ++ show (negative intRep))
   return $ case signedness of
     Signed -> if negative intRep then negate res else res
     Unsigned -> res
@@ -114,27 +107,14 @@ instance Storable R.Value where
   alignment _ = {# alignof Value #}
 
   poke p value =
-    -- let
-    -- setValType x = {# set Value.type #} p $ fromIntegral (fromEnum $ x)
-    -- in
       case value of
         R.IntVal i ->
           pokeIntVal Signed {# get Value.value.integer #} p i
-        -- SMEUInt i ->
-        --   pokeIntVal Unsigned {# get Value.value.integer #} p i
-        -- SMENativeInt i -> do
-        --   setValType SmeNativeInt
-        --   {# set Value.value.native_int #} p $ fromIntegral i
-        -- SMENativeUint i -> do
-        --   setValType SmeNativeUint
-        --   {# set Value.value.native_uint #} p $ fromIntegral i
         R.SingleVal i -> do
           {# set Value.value.f32 #} p $ CFloat i
         R.DoubleVal i -> do
---          setValType SmeDouble
           {# set Value.value.f64 #} p $ CDouble i
         R.BoolVal i -> do
---          setValType SmeBool
           {# set Value.value.boolean #} p $ i
   {-# INLINE poke #-}
 
@@ -144,10 +124,6 @@ instance Storable R.Value where
           R.IntVal <$> peekIntVal Signed {# get Value.value.integer #} p
         SmeUint ->
           R.IntVal <$> peekIntVal Unsigned {# get Value.value.integer #} p
-        -- SmeNativeInt ->
-        --   SMENativeInt . fromIntegral  <$> ({# get Value.value.native_int #} p)
-        -- SmeNativeUint ->
-        --   SMENativeUint . fromIntegral  <$> ({# get Value.value.native_uint #} p)
         SmeFloat -> do
           (CFloat f) <- ({# get Value.value.f32 #} p)
           return $ R.SingleVal f

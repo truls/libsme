@@ -22,7 +22,9 @@ typedef enum Type {
 typedef struct SMEInt {
   int len;
   int alloc_size;
-  bool negative;
+  // FIXME: This should really be a bool, but chs2hs guesses them to be the
+  // wrong length (I think) of 4 instead of 1 byte.
+  int negative;
   char* num;
 } SMEInt;
 
