@@ -113,12 +113,12 @@ genExpr Binary {..} = do
   -- https://www.cs.tufts.edu/~nr/pubs/unparse-abstract.html
   -- I'm not sure if SMEIL and VHDL has the same operator precedences so for now
   -- we just place parentheses around all binops.
-  return [expr|$expr:(genBinOp binOp e1 e2)|]
+  return [expr|($expr:(genBinOp binOp e1 e2))|]
   where
     genBinOp (PlusOp _)  e1 e2 = [expr|$expr:e1  +  $expr:e2|]
     genBinOp (MinusOp _) e1 e2 = [expr|$expr:e1  -  $expr:e2|]
-    genBinOp (MulOp _)   e1 e2 = [expr|$expr:e1  +  $expr:e2|]
-    genBinOp (DivOp _)   e1 e2 = [expr|$expr:e1  +  $expr:e2|]
+    genBinOp (MulOp _)   e1 e2 = [expr|$expr:e1  *  $expr:e2|]
+    genBinOp (DivOp _)   e1 e2 = [expr|$expr:e1  /  $expr:e2|]
     genBinOp (ModOp _)   e1 e2 = [expr|$expr:e1 mod $expr:e2|]
     genBinOp (EqOp _)    e1 e2 = [expr|$expr:e1  =  $expr:e2|]
     genBinOp (NeqOp _)   e1 e2 = [expr|$expr:e1 /=  $expr:e2|]
