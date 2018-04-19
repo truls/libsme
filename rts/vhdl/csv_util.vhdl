@@ -1,10 +1,12 @@
 library IEEE;
 
+use ieee.numeric_std.all;
 use IEEE.STD_LOGIC_1164.ALL;
 use STD.TEXTIO.all;
 use IEEE.STD_LOGIC_TEXTIO.all;
 use std.textio.all;
 
+library work;
 
 package csv_util is
 
@@ -46,6 +48,21 @@ package csv_util is
 
     -- Converts the input strings unwanted characters to underscore
     function to_safe_name(ln: string) return string;
+
+    -- Return the image of a signed integer
+    function int_image(b: signed) return string;
+
+    -- Return the image of an unsigned integer
+    function uint_image(b: unsigned) return string;
+
+    -- Return the image of a boolean
+    function bool_image(b: boolean) return string;
+
+    function to_value(b: string) return boolean;
+
+    function to_value(b: string; l: integer) return unsigned;
+
+    function to_value(b: string; l: integer) return signed;
 
 end csv_util;
 
@@ -234,5 +251,39 @@ package body csv_util is
             return res;
         end if;
     end str;
+
+    function bool_image(b: boolean) return string is
+    begin
+      return boolean'image(b);
+    end bool_image;
+
+    function int_image(b: signed) return string is
+      variable i: integer;
+    begin
+      i := to_integer(b);
+      return integer'image(i);
+    end int_image;
+
+    function uint_image(b: unsigned) return string is
+      variable i: integer;
+    begin
+      i := to_integer(b);
+      return integer'image(i);
+    end uint_image;
+
+    function to_value(b: string) return boolean is
+    begin
+      return boolean'value(b);
+    end to_value;
+
+    function to_value(b: string; l: integer) return unsigned is
+    begin
+      return to_unsigned(integer'value(b), l);
+    end to_value;
+
+    function to_value(b: string; l: integer) return signed is
+    begin
+      return to_signed(integer'value(b), l);
+    end to_value;
 
  end package body csv_util;

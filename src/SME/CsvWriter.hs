@@ -2,6 +2,7 @@
 
 {-# LANGUAGE GADTs      #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module SME.CsvWriter
   ( writeCsvLine
@@ -16,10 +17,9 @@ import           Control.Concurrent.STM  (TMVar, TQueue, atomically,
                                           putTMVar, readTQueue, takeTMVar,
                                           writeTQueue)
 import           Data.ByteString.Builder (Builder, charUtf8, doubleDec,
-                                          floatDec, hPutBuilder, integerDec)
+                                          floatDec, hPutBuilder, integerDec, stringUtf8)
 import           Data.List               (intersperse)
 import           System.IO               (IOMode (WriteMode), hClose, openFile)
-
 
 import           SME.Representation
 
@@ -43,14 +43,17 @@ instance ToCsvCell Integer where
   toCsvCell = integerDec
 
 instance ToCsvCell Bool where
-  toCsvCell True  = integerDec 1
-  toCsvCell False = integerDec 0
+  toCsvCell True  = toCsvCell "true"
+  toCsvCell False = toCsvCell "false"
 
 instance ToCsvCell Double where
   toCsvCell = doubleDec
 
 instance ToCsvCell Float where
   toCsvCell = floatDec
+
+instance ToCsvCell [Char] where
+  toCsvCell = stringUtf8
 
 -- writeCsvLine :: (ToCsvCell a) => CsvChan -> [a] -> CsvChan
 -- writeCsvLine chan its =            let b' =

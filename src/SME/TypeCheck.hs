@@ -12,7 +12,6 @@ module SME.TypeCheck
   ( typeCheck
   ) where
 
-import           Control.Arrow               (first)
 import           Control.Exception           (throw)
 import           Control.Monad               (foldM, forM, forM_, unless,
                                               zipWithM)
@@ -26,14 +25,12 @@ import           Data.Generics.Uniplate.Data (universeBi)
 import qualified Data.HashMap.Strict         as M
 import           Data.List                   (mapAccumR, sortOn)
 import qualified Data.List.NonEmpty          as N
-import           Data.Loc                    (Loc, Located (..), SrcLoc (..),
-                                              fromLoc, noLoc)
+import           Data.Loc                    (Located (..), fromLoc, noLoc)
 import           Data.Maybe                  (fromMaybe, isNothing)
 import           Data.Monoid                 ((<>))
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
-import           Language.SMEIL.Util
 import           SME.Error
 import           SME.Representation
 import           SME.Warning
@@ -44,8 +41,8 @@ import           Text.Show.Pretty            (ppShow)
 trace :: String -> a -> a
 trace _ = id
 
-traceM :: (Applicative f) => String -> f ()
-traceM _ = pure ()
+-- traceM :: (Applicative f) => String -> f ()
+-- traceM _ = pure ()
 
 -- * Type checking monad and data structures for holding type checking state
 
@@ -95,13 +92,13 @@ lookupBus r =
        b@BusDef {} -> pure b
        _ -> throw $ ExpectedBus (N.head ref)
 
-hasArrayAccess :: Name -> Bool
-hasArrayAccess Name {..} =
-  (flip any) (N.toList parts) isArray
+-- hasArrayAccess :: Name -> Bool
+-- hasArrayAccess Name {..} =
+--   flip any (N.toList parts) isArray
 
-isArray :: NamePart -> Bool
-isArray  IdentName {}  = False
-isArray ArrayAccess {} = True
+-- isArray :: NamePart -> Bool
+-- isArray  IdentName {}  = False
+-- isArray ArrayAccess {} = True
 
 -- TODO: Handle multi-dimensional arrays
 -- This is a bit of hack. The idea is that if the final component of a name is
@@ -139,13 +136,17 @@ trackUsage t r act
       updateDef r (\x -> x {varState = Used})
       act r
     BusDef {busRef = bRef} -> do
+      bus <- lookupDef bRef
       getBusState bRef >>= \case
-        Nothing ->
+        Nothing
+          -- At this point we should only meet locally declared buses as all
+          -- has been added by the parameter type inference function.
+         ->
           setUsedBus
             bRef
-            -- TODO: We have to make sure that the reference we insert here
-            -- reflects how the bus is actually referenced within the process
-            ( refOf $ N.head bRef
+            -- TODO: Account for the case where we reference a bus declared in
+            -- another process by the name of the process.
+            ( refOf $ nameOf bus
             , if t == Load
                 then Input
                 else Output)
@@ -408,8 +409,8 @@ ensureSingleRef r = go $ refOf r
       throw $
       InternalCompilerError "Compound names should not occur at this point"
 
-reduceRange :: (MonadRepr s m) => Range -> m (Integer, Integer)
-reduceRange Range {..} = (,) <$> exprReduceToInt lower <*> exprReduceToInt upper
+-- reduceRange :: (MonadRepr s m) => Range -> m (Integer, Integer)
+-- reduceRange Range {..} = (,) <$> exprReduceToInt lower <*> exprReduceToInt upper
 
 -- | Create an environment for a process by adding its definitions
 buildDeclTab ::
@@ -521,7 +522,7 @@ buildProcTab p@Process {name = n, decls = d, body = body} = do
 buildNetTab :: (MonadRepr s m) => Network -> m TopDef
 buildNetTab net@Network {name = n, netDecls = d} = do
   tab <- foldM go M.empty d
-  return $ NetworkTable tab n [] net Void
+  return $ NetworkTable tab n [] net False Void
   where
     go m (NetConst c@Constant {..}) = do
       val' <- exprReduceToLiteral val
@@ -661,7 +662,8 @@ inferParamTypes insts = do
         ( forName
         , BusPar
           { ref = busRef bDef
-          , localRef = refOf locRef
+          , paramRef = refOf locRef
+          , localRef = refOf forName
           , busShape = shape
           , busState = dir
           , array = count'

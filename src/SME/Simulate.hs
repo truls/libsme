@@ -31,7 +31,8 @@ import           Data.Bits                         (complement, shiftL, shiftR,
 import           Data.IORef                        (IORef, modifyIORef,
                                                     newIORef, readIORef,
                                                     writeIORef)
-import           Data.List                         (groupBy, nub, sortBy)
+import           Data.List                         (groupBy, nub, sort, sortBy,
+                                                    sortOn)
 import           Data.List.NonEmpty                (NonEmpty (..))
 import qualified Data.List.NonEmpty                as N
 import           Data.Maybe                        (catMaybes, fromMaybe,
@@ -40,7 +41,8 @@ import           Data.Maybe                        (catMaybes, fromMaybe,
 import           Control.Concurrent.Async          (async, mapConcurrently,
                                                     wait)
 import           Control.Monad.Except              (MonadError)
-import           Control.Monad.Extra               (concatMapM, mapMaybeM)
+import           Control.Monad.Extra               (concatForM, concatMapM,
+                                                    mapMaybeM)
 import           Control.Monad.IO.Class            (MonadIO, liftIO)
 import           Control.Monad.State               (MonadState, get, gets,
                                                     modify)
@@ -49,6 +51,7 @@ import           Data.Graph.Inductive.PatriciaTree (Gr)
 import           Data.Graph.Inductive.Query.DFS    (scc, topsort)
 import qualified Data.HashMap.Strict               as M
 import           Data.Loc                          (noLoc)
+import qualified Data.Map.Strict                   as MM
 import           Data.Vector                       (fromList, (!), (//))
 
 import           Language.SMEIL.Syntax
@@ -175,10 +178,11 @@ data BusChan
   deriving (Eq)
 
 data BusInst  = BusInst
-  { chans   :: M.HashMap Ident BusChan
-  , ref     :: Ref -- ^Reference to the bus that this was instantiated from
-  , readers :: [Int] -- ^ Processes connected to the read end of the bus
-  , writers :: [Int] -- ^ Processes connected to the write end of the bus
+  { chans       :: MM.Map Ident BusChan
+  , busInstName :: Ident
+  , ref         :: Ref -- ^Reference to the bus that this was instantiated from
+  , readers     :: [Int] -- ^ Processes connected to the read end of the bus
+  , writers     :: [Int] -- ^ Processes connected to the write end of the bus
   -- TODO: Implement the readers/writers thing and us it to build a graph
   } deriving (Eq)
 
@@ -279,37 +283,37 @@ evalExpr PrimLit {..} =
 
 -- FIXME: Find a better way of doing this
 evalBinOp :: BinOp -> Value -> Value -> SimM Value
-evalBinOp PlusOp {} (IntVal i) (IntVal j)        = pure $ IntVal $ i + j
-evalBinOp PlusOp {} (DoubleVal i) (DoubleVal j)  = pure $ DoubleVal $ i + j
-evalBinOp PlusOp {} (SingleVal i) (SingleVal j)  = pure $ SingleVal $ i + j
-evalBinOp MinusOp {} (IntVal i) (IntVal j)       = pure $ IntVal $ i - j
-evalBinOp MinusOp {} (DoubleVal i) (DoubleVal j) = pure $ DoubleVal $ i - j
-evalBinOp MinusOp {} (SingleVal i) (SingleVal j) = pure $ SingleVal $ i - j
-evalBinOp ModOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i `mod` j
-evalBinOp MulOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i * j
-evalBinOp MulOp {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i * j
-evalBinOp MulOp {} (SingleVal i) (SingleVal j)   = pure $ SingleVal $ i * j
-evalBinOp DivOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i `div` j
-evalBinOp DivOp {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i / j
-evalBinOp DivOp {} (SingleVal i) (SingleVal j)   = pure $ SingleVal $ i / j
-evalBinOp AndOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i .&. j
-evalBinOp OrOp {} (IntVal i) (IntVal j)          = pure $ IntVal $ i .|. j
-evalBinOp SllOp {} (IntVal i) (IntVal j)         =
+evalBinOp PlusOp  {} (IntVal i)    (IntVal j)      = pure $ IntVal $ i + j
+evalBinOp PlusOp  {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i + j
+evalBinOp PlusOp  {} (SingleVal i) (SingleVal j)   = pure $ SingleVal $ i + j
+evalBinOp MinusOp {} (IntVal i)    (IntVal j)      = pure $ IntVal $ i - j
+evalBinOp MinusOp {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i - j
+evalBinOp MinusOp {} (SingleVal i) (SingleVal j)   = pure $ SingleVal $ i - j
+evalBinOp ModOp   {} (IntVal i)    (IntVal j)      = pure $ IntVal $ i `mod` j
+evalBinOp MulOp   {} (IntVal i)    (IntVal j)      = pure $ IntVal $ i * j
+evalBinOp MulOp   {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i * j
+evalBinOp MulOp   {} (SingleVal i) (SingleVal j)   = pure $ SingleVal $ i * j
+evalBinOp DivOp   {} (IntVal i)    (IntVal j)      = pure $ IntVal $ i `div` j
+evalBinOp DivOp   {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i / j
+evalBinOp DivOp   {} (SingleVal i) (SingleVal j)   = pure $ SingleVal $ i / j
+evalBinOp AndOp   {} (IntVal i)    (IntVal j)      = pure $ IntVal $ i .&. j
+evalBinOp OrOp    {} (IntVal i)    (IntVal j)      = pure $ IntVal $ i .|. j
+evalBinOp SllOp   {} (IntVal i)    (IntVal j)      =
   pure $ IntVal $  shiftL i (fromIntegral j)
-evalBinOp SrlOp {} (IntVal i) (IntVal j)         =
+evalBinOp SrlOp   {} (IntVal i) (IntVal j)         =
   pure $ IntVal $  shiftR i (fromIntegral j)
-evalBinOp XorOp {} (IntVal i) (IntVal j)         = pure $ IntVal $ i `xor` j
-evalBinOp ConOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i && j
-evalBinOp EqOp {} (IntVal i) (IntVal j)          = pure $ BoolVal $ i == j
-evalBinOp EqOp {} (DoubleVal i) (DoubleVal j)    = pure $ BoolVal $ i == j
-evalBinOp EqOp {} (SingleVal i) (SingleVal j)    = pure $ BoolVal $ i == j
-evalBinOp EqOp {} (BoolVal i) (BoolVal j)        = pure $ BoolVal $ i == j
-evalBinOp DisOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i || j
-evalBinOp GeqOp {} (IntVal i) (IntVal j)         = pure $ BoolVal $ i >= j
-evalBinOp GeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i >= j
-evalBinOp GeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i >= j
-evalBinOp GeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i >= j
-evalBinOp GtOp {} (IntVal i) (IntVal j)          = pure $ BoolVal $ i > j
+evalBinOp XorOp   {} (IntVal i) (IntVal j)         = pure $ IntVal $ i `xor` j
+evalBinOp ConOp   {} (BoolVal i)    (BoolVal j)    = pure $ BoolVal $ i && j
+evalBinOp EqOp    {} (IntVal i)    (IntVal j)      = pure $ BoolVal $ i == j
+evalBinOp EqOp    {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i == j
+evalBinOp EqOp    {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i == j
+evalBinOp EqOp    {} (BoolVal i)   (BoolVal j)     = pure $ BoolVal $ i == j
+evalBinOp DisOp   {} (BoolVal i)   (BoolVal j)     = pure $ BoolVal $ i || j
+evalBinOp GeqOp   {} (IntVal i)    (IntVal j)      = pure $ BoolVal $ i >= j
+evalBinOp GeqOp   {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i >= j
+evalBinOp GeqOp   {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i >= j
+evalBinOp GeqOp   {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i >= j
+evalBinOp GtOp    {} (IntVal i) (IntVal j)          = pure $ BoolVal $ i > j
 evalBinOp GtOp {} (DoubleVal i) (DoubleVal j)    = pure $ BoolVal $ i > j
 evalBinOp GtOp {} (SingleVal i) (SingleVal j)    = pure $ BoolVal $ i > j
 evalBinOp GtOp {} (BoolVal i) (BoolVal j)        = pure $ BoolVal $ i > j
@@ -343,9 +347,9 @@ evalUnOp _ _                      =
 
 propagateBus :: BusInst -> SimM  [Value]
 propagateBus BusInst {..}
-  --liftIO $ putStrLn ("Propagating bus " ++ show ref)
  = do
-  let vs = M.elems chans
+  --liftIO $ putStrLn ("Propagating bus " ++ show ref)
+  let vs = MM.elems chans
   forM
     vs
     (\case
@@ -362,6 +366,7 @@ propagateBus BusInst {..}
           -- External channels are propagated by the c-wrapper
         -> liftIO $ peek readEnd)
 --{-# INLINE propagateBus #-}
+
 
 -- | Returns a new and globally unique integer every time its called.
 getFreshLabel :: SimM Int
@@ -436,6 +441,7 @@ instance (ToValue a) => ToValue [a] where
 instance ToValue Value where
   toValue = id
 
+
 -- | Get the Type of a Value. Will try to "adapt" the type to the given
 -- Typeness parameter such that it, e.g., returns signed types if existing type
 -- is signed
@@ -453,6 +459,7 @@ valueToType (SingleVal _) t = t
 valueToType (DoubleVal _) t = t
 valueToType (ArrayVal _ v) t = valueToType (maximum v) t
 
+
 -- | Creates a bus instance either locally or in the C-interface depending on if
 -- the bus is stored locally or not.
 mkBusInst :: Bool -> Ident -> BusShape -> Ref -> SimM BusInst
@@ -464,7 +471,9 @@ mkBusInst exposed n bs busRef = do
           busPtr <- mkExtBus ptr (toString n) -- liftIO $ apiCallWrap $ busFun (toString n)
           toExtChans exposed busPtr bs
       Nothing -> liftIO $ toBusChans bs
-  return $ BusInst (M.fromList chans) busRef [] []
+  let res = BusInst (MM.fromList (sortOn fst chans)) n busRef [] []
+  addBusInst res
+  return res
   where
     toExtChans :: Bool -> BusPtr -> BusShape -> IO [(Ident, BusChan)]
     toExtChans isPuppet bptr bs' =
@@ -493,6 +502,7 @@ mkBusInst exposed n bs busRef = do
                newIORef defVal))
         (unBusShape bs')
 
+
 mkInitialValue :: Typeness -> SimM Value
 mkInitialValue Untyped = throw $ InternalCompilerError "Untyped value in sim"
 mkInitialValue (Typed t) = go t
@@ -513,6 +523,7 @@ mkInitialValue (Typed t) = go t
           Nothing -> throw $ InternalCompilerError "No array len" -- FIXME
       toValue <$>
         replicateM len (mkInitialValue (typeOf innerTy))
+
 
 -- | Creates a new vtable @ds@ from a list of definitions, adding to table
 -- passed as 'vtab'
@@ -539,6 +550,7 @@ mkVtable ds vtab = foldM go vtab ds
       return $ M.insert busName (BusVal bus) m
     go m _ = return m
 
+
 -- | Checks for cycles in the instantiation graph by calculating the Strongly
 -- Connected Components (SCC) of the graph. Cycles are indicated by the presence
 -- of SCCs consisting of more than one node.
@@ -556,6 +568,7 @@ ensureAcyclic g =
            ("Instantiation cycles formed by entities " ++
             unwords (map show labs'))
 
+
 -- | Returns a list of processes that is instantiated from a process.
 instantiates :: Ident -> [DefType] -> SimM [LNode Ident]
 instantiates instantiator = mapMaybeM go
@@ -568,6 +581,7 @@ instantiates instantiator = mapMaybeM go
         -- TODO: Better error
       return $ Just (nodeId (topExt td), instantiated)
     go _ = return Nothing
+
 
 -- | Finds the entity that instantiation should start from. Generates the
 -- instantiation graph and ensures that it is acyclic. The returned element is
@@ -582,16 +596,17 @@ getNetworkEntry = do
           edges'
       graph = InstGraph $ mkGraph nodes' edges''
       instOrder = topsort (unInstGraph graph)
-  unless (not (null instOrder)) $
-    throw $ InternalCompilerError "Network contains no processes"
+  entryProc <-
+    case instOrder of
+      (x:_) -> pure x
+      []    -> throw $ InternalCompilerError "Network contains no processes"
   -- liftIO $ prettyPrint (unInstGraph graph)
   -- liftIO $ print $ isConnected (unInstGraph graph)
   -- liftIO $ print $ topsort (unInstGraph graph)
   -- liftIO $ print $ scc (unInstGraph graph)
   ensureAcyclic graph
   return $
-    fromMaybe (Ident "__unknown" noLoc) $
-    lab (unInstGraph graph) $ head instOrder
+    fromMaybe (Ident "__unknown" noLoc) $ lab (unInstGraph graph) entryProc
   where
     go a = do
       let symtab = symTable a
@@ -636,6 +651,13 @@ addLink l = do
 
 getLinks :: SimM [ProcLink]
 getLinks = links <$> gets (ext :: SimEnv -> SimExt)
+
+addBusInst :: BusInst -> SimM ()
+addBusInst bi = do
+  e <- gets (ext :: SimEnv -> SimExt)
+  let insts = simBuses e
+  -- FIXME: This is a bit inefficient
+  modify (\x -> x {ext = e {simBuses = sortOn busInstName (bi : insts)}} :: SimEnv)
 
 lookupCurVtable :: Ident -> SimM (Maybe SimRef)
 lookupCurVtable i = do
@@ -747,7 +769,7 @@ getValueVtab Name {parts = parts} = go parts
 
 setBusVal :: Ident -> BusInst -> Value -> SimM ()
 setBusVal i BusInst {..} v =
-  case M.lookup i chans of
+  case MM.lookup i chans of
     Just LocalChan {localWrite = write, maxBusVal = maxBusVal} ->
       liftIO $ do
         modifyIORef maxBusVal (`max` absValue v)
@@ -762,7 +784,7 @@ setBusVal i BusInst {..} v =
 getBusVal :: Ident -> BusInst -> SimM Value
 getBusVal i BusInst {..} = do
   traceM $ "Reading bus val " ++ show i
-  case M.lookup i chans of
+  case MM.lookup i chans of
     Just LocalChan {localRead = readEnd} -> liftIO $ readIORef readEnd
     Just ExternalChan {extRead = readEnd, maxBusVal = maxBV} -> do
       res <- liftIO $ peek readEnd
@@ -923,10 +945,10 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
              case parType of
                ConstPar _ -> pure Nothing
                BusPar {..} -> do
-                 (nid, ref') <- resolveBusParam localRef
+                 (nid, ref') <- resolveBusParam paramRef
                  case busState of
                    Input -> addLink (ProcLink (myNodeId, nid, "foo", ref'))
-                   Output -> addLink (ProcLink (nid, myNodeId, "foo", ref'))
+                   Output -> addLink (ProcLink  (nid, myNodeId, "foo", ref'))
                    _ -> throw $ InternalCompilerError "BusState invalid here"
                  return $ Just (parName, BusVal ref'))
           parList
@@ -961,6 +983,10 @@ setupSimEnv ptr = do
   labelInstances
   --constructGraph
   entry <- getNetworkEntry
+  -- Mark the entity as top-level
+  -- TODO: Move the whole graph generation part out of the simulator since it is
+  -- technically unrelated to the simulator
+  updateTopDef entry (\x -> x { topLevel = True })
   tree <- lookupTopDef entry >>= instEntity M.empty
   let insts = flattenInstTree tree
   -- traceM $ ppShow tree
@@ -979,10 +1005,11 @@ setupSimEnv ptr = do
       buses = nub $ map (\(ProcLink (_, _, _, b)) -> b) links
   procs <- liftIO $ mapM newIORef insts -- nub $ map snd nodes'
   -- Save buses in state
+  writeCsvHeader
   modify
     (\x ->
        let ee = envExt x
-       in x {ext = ee {simProcs = procs, simBuses = buses}} :: SimEnv)
+       in x {ext = ee {simProcs = procs}} :: SimEnv)
   -- liftIO $ print (length buses, length procs)
   -- _ <- replicateM 10 $ runSimulation procs buses
 
@@ -1011,6 +1038,21 @@ procStep :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
 procStep env =
   let act = mapM_ (modifyIORefM runProcess) =<< gets (simProcs . envExt)
   in runStep env act
+
+writeCsvHeader ::  SimM ()
+writeCsvHeader = do
+  buses <- gets (simBuses . envExt)
+  heads <-
+    sort <$> concatForM
+      buses
+      (\BusInst {ref = ref@(h :| _), chans = chans}
+        -> do
+          -- TODO: Add a lookupGlobalRef function to avoid this
+         bName <- nameOf <$> withScope h (lookupDef ref)
+         return $  map (\x -> toString bName ++ "_" ++ toString x) (MM.keys chans))
+  gets (csvWriter . envExt) >>= \case
+    Just a -> liftIO $ writeCsvLine a heads
+    Nothing -> return ()
 
 busStep :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
 busStep env =
@@ -1055,7 +1097,7 @@ chanValList b =
   maxInGroup . sortBy (\(x, _) (y, _) -> compare x y) <$> concatMapM go b
   where
     go BusInst {..} =
-      let vals = M.elems chans
+      let vals = MM.elems chans
       in map (\(n, v) -> ((ref, n), v)) <$> mapM chanMaxVal vals
 
 -- TODO: Replace by groupBy/maximumBY

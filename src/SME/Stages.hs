@@ -101,4 +101,4 @@ compile conf = do
             Right r -> pure r
   simulate 10 tyEnv
   --when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
-  --genOutput (outputDir conf) VHDL tyEnv
+  genOutput (outputDir conf) VHDL tyEnv

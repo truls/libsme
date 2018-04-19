@@ -25,6 +25,7 @@ module SME.Representation
   , Value (..)
   , BaseSymTab
   , ParamList
+  , UsedBuses
   , ensureUndef
   , mkEnv
   , runReprM
@@ -214,34 +215,18 @@ class ( Monad m
     updateTopDef
       top
       (\x -> x {symTable = M.insert (toString name) res (symTable x)})
-  -- updateDef ::
-  --      (References a, Located a, Pretty a)
-  --   => a
-  --   -> (BaseDefType s -> (BaseDefType s))
-  --   -> m ()
-  -- updateDef d f
-  --   -- Lookup whole reference, lookup definition, then update topDef doing a map
-  --   -- insert with the update definition
-  --  = do
-  --   def <- lookupDef d
-  --   let top = N.head (refOf d)
-  --       name = nameOf def
-  --   let res = f def
-  --   updateTopDef
-  --     top
-  --     (\x -> x {symTable = M.insert (toString name) res (symTable x)})
   mapDefsM ::
        (References a, Located a, Pretty a)
     => a
     -> (BaseDefType s -> m a)
     -> m [a]
-  curEnvIdent :: m Ident
-  curEnvIdent = gets curEnv
   mapDefsM d f = do
     def <- lookupTopDef d
     let tab = symTable def
         defs = M.elems tab
     mapM f defs
+  curEnvIdent :: m Ident
+  curEnvIdent = gets curEnv
   mapUsedTopDefsM_ :: (BaseTopDef s -> m ()) -> m ()
   -- FIXME: The "used" here is probably a bug as unused top-level entities
   -- should be filtered away by
@@ -556,8 +541,9 @@ lookupTy r = do
         BusPar {..} -> fst <$> lookupBusShape busShape rest
     getType _ ParamDef {} -- TODO: Better error message
      = trace "ParamDef" $ throw $ UndefinedName r
-    lookupBusShape busShape rest =
+    lookupBusShape busShape rest
       -- TODO: Maybe use a map for busShape
+     =
       case lookup rest (unBusShape busShape) of
         Just a  -> pure a
         Nothing -> trace "lookupBusShape" $ throw $ UndefinedName r
@@ -571,15 +557,19 @@ newtype BusShape = BusShape
 
 --type BusShape = M.HashMap Ident (Typeness, Maybe Expr)
 
-data InstParam =
-  InstConstPar Ref
+data InstParam
+  = InstConstPar Ref
   | InstBusPar Ref
   deriving (Show, Eq)
 
 data ParamType
   = ConstPar Typeness
   | BusPar { ref      :: Ref
+           -- ^ Reference to the bus declaration itself
+           , paramRef :: Ref
+           -- ^ The bus reference as provided in the parameter list
            , localRef :: Ref
+           -- ^ The bus reference used within the instantiated process
            , busShape :: BusShape
            , busState :: BusState
            , array    :: Maybe Integer}
@@ -605,6 +595,11 @@ data VarState
 type BaseSymTab a = M.HashMap String (BaseDefType a)
 type ParamList = [(Ident, ParamType)]
 
+-- | Map from the global reference of a bus definition a set containing the
+-- local name that is used for a bus within a process and the mode of the bus
+-- (input/output/...)
+type UsedBuses = M.HashMap Ref (S.Set (Ref, BusState))
+
 data BaseTopDef a
   = ProcessTable { symTable  :: BaseSymTab a
                  , procName  :: Ident
@@ -614,7 +609,7 @@ data BaseTopDef a
                  --, params    :: M.HashMap Ident ParamType
                  , stms      :: [Statement]
                    --, usedBuses :: M.HashMap Ref (S.Set (Maybe Ident, BusState))
-                 , usedBuses :: M.HashMap Ref (S.Set (Ref, BusState))
+                 , usedBuses :: UsedBuses
                  --, referencedProcs ::
                  , procDef   :: Process
                  , ext       :: a }
@@ -622,6 +617,7 @@ data BaseTopDef a
                  , netName  :: Ident
                  , params   :: ParamList
                  , netDef   :: Network
+                 , topLevel :: Bool
                  , ext      :: a }
   deriving (Show)
 

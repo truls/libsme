@@ -24,8 +24,8 @@ data Language
   | Python
 
 writeOutput :: FilePath -> OutputFile -> IO ()
-writeOutput dir OutputFile {..} =
-  TIO.writeFile (dir </> (destFile ++ ".vhdl")) content
+writeOutput dir f@OutputFile {..} =
+  TIO.writeFile (dir </> (fileName f)) content
 
 genOutput' :: Language -> GenM OutputPlan
 genOutput' VHDL   = genVHDL
