@@ -15,7 +15,7 @@ import           Control.Exception     (throw, tryJust)
 import           Control.Monad         (when)
 import           Data.Char             (isLetter, toLower)
 import qualified Data.Text.IO          as TIO
-import           Text.Show.Pretty      (ppShow)
+--import           Text.Show.Pretty      (ppShow)
 
 import           Language.SMEIL.Pretty
 import           SME.CodeGen

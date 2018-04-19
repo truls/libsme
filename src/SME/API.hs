@@ -6,7 +6,7 @@ module SME.API
   (
   ) where
 
-import           Control.Exception  (Exception, try, tryJust)
+import           Control.Exception  (try, tryJust)
 import           Foreign.C.String   (CString, peekCString, withCString)
 import           Foreign.StablePtr  (StablePtr, deRefStablePtr, freeStablePtr,
                                      newStablePtr)
@@ -25,8 +25,8 @@ import           SME.TypeCheck
 trace :: String -> a -> a
 trace _ = id
 
-traceM :: (Applicative f) => String -> f ()
-traceM _ = pure ()
+-- traceM :: (Applicative f) => String -> f ()
+-- traceM _ = pure ()
 
 type SimCtxPtr = StablePtr ApiCtx
 
@@ -116,7 +116,7 @@ genCode c n = do
   ctx <- deRefStablePtr c
   freeStablePtr c
   s' <- peekCString n
-  try (genOutput s' VHDL (Void <$ (simState ctx))) >>= \case
+  try (genOutput s' VHDL (Void <$ simState ctx)) >>= \case
     Left e -> do
       setError (libCtx ctx) (show (e :: TypeCheckErrors))
       return False

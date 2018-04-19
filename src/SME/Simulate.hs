@@ -31,15 +31,14 @@ import           Data.Bits                         (complement, shiftL, shiftR,
 import           Data.IORef                        (IORef, modifyIORef,
                                                     newIORef, readIORef,
                                                     writeIORef)
-import           Data.List                         (groupBy, nub, sort, sortBy,
-                                                    sortOn)
+import           Data.List                         (nub, sort, sortBy, sortOn)
 import           Data.List.NonEmpty                (NonEmpty (..))
 import qualified Data.List.NonEmpty                as N
 import           Data.Maybe                        (catMaybes, fromMaybe,
                                                     mapMaybe)
 
-import           Control.Concurrent.Async          (async, mapConcurrently,
-                                                    wait)
+--import           Control.Concurrent.Async          (async, mapConcurrently,
+                                                    --wait)
 import           Control.Monad.Except              (MonadError)
 import           Control.Monad.Extra               (concatForM, concatMapM,
                                                     mapMaybeM)
@@ -55,7 +54,6 @@ import qualified Data.Map.Strict                   as MM
 import           Data.Vector                       (fromList, (!), (//))
 
 import           Language.SMEIL.Syntax
-import           Language.SMEIL.Util
 import           SME.API.Internal
 import           SME.CsvWriter
 import           SME.Error
@@ -135,9 +133,8 @@ newtype InstGraph = InstGraph
   { unInstGraph :: Gr Ident Ident
   }
 
-newtype ProcGraph =
-  ProcGraph (Gr (IORef ProcInst) String) --(IORef BusInst)
-
+-- newtype ProcGraph =
+--   ProcGraph (Gr (IORef ProcInst) String) --(IORef BusInst)
 
 
 data SimExt
@@ -213,7 +210,7 @@ data ProcInst = ProcInst
 type VTable =  M.HashMap Ident SimRef
 
 data SimRef
-  = MutVal { cur    :: Value
+  = MutVal { _cur   :: Value
            , maxVal :: Value }
   | ConstVal Value
   | InstVal ProcInst
@@ -270,6 +267,7 @@ evalStm Switch {..} = do
           mapM_ evalStm stms
           return True
         else evalCase sVal ss
+evalStm _ = error "Simulation of all statements not implemented yet"
 
 
 -- | Evaluates an expression
@@ -285,7 +283,7 @@ evalExpr PrimName {..} =
   getValueVtab name
 evalExpr PrimLit {..} =
   pure $ toValue lit
-
+evalExpr _ = error "Function calls not implemented yet"
 
 -- FIXME: Find a better way of doing this
 evalBinOp :: BinOp -> Value -> Value -> SimM Value
@@ -655,8 +653,9 @@ addLink l = do
   let ls = links e
   modify (\x -> x {ext = e {links = l:ls}} :: SimEnv)
 
-getLinks :: SimM [ProcLink]
-getLinks = links <$> gets (ext :: SimEnv -> SimExt)
+-- We may use this later
+-- getLinks :: SimM [ProcLink]
+-- getLinks = links <$> gets (ext :: SimEnv -> SimExt)
 
 addBusInst :: BusInst -> SimM ()
 addBusInst bi = do
@@ -804,6 +803,7 @@ getBusVal i BusInst {..} = do
 getValue :: SimRef -> SimM Value
 getValue (MutVal v _ ) = return v
 getValue (ConstVal v)  = return v
+getValue _ = throw $ InternalCompilerError "SimRef does not have a simple value"
 
 evalConstExpr :: Expr -> SimM Value
 evalConstExpr PrimLit {..} = return $ toValue lit
@@ -811,6 +811,7 @@ evalConstExpr PrimName {name = Name {..}} =
   case parts of
     (IdentName {ident = ident} :| _) -> getValue =<< lookupCurVtableE ident
     (ArrayAccess {} :| _)            -> undefined
+evalConstExpr _ = error "TODO: Better constexpr evaluation"
     -- do
     -- lookupCurVtable ident >>= \case
     --   ArrayVal {} -> error "Arrays not implemented"
@@ -947,7 +948,7 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
       paramVals <-
         catMaybes <$>
         zipWithM
-          (\(parName, parType) (_, parVal) ->
+          (\(parName, parType) (_, _parVal) ->
              case parType of
                ConstPar _ -> pure Nothing
                BusPar {..} -> do
@@ -964,8 +965,9 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
       return $ procInst {valueTab = vtab'}
     _ -> throw $ InternalCompilerError "Expected instDef"
 
-instsToMap :: [ProcInst] -> M.HashMap Int ProcInst
-instsToMap = foldr (\p@ProcInst {..} m -> M.insert instNodeId p m) M.empty
+-- We may use this later
+-- instsToMap :: [ProcInst] -> M.HashMap Int ProcInst
+-- instsToMap = foldr (\p@ProcInst {..} m -> M.insert instNodeId p m) M.empty
 
 -- | Sets up the simulation sets up the simulation environment
 setupSimEnv :: Maybe SmeCtxPtr -> SimM ()
@@ -996,19 +998,20 @@ setupSimEnv ptr = do
   tree <- lookupTopDef entry >>= instEntity M.empty
   let insts = flattenInstTree tree
   -- traceM $ ppShow tree
-  let instMap = instsToMap insts
-  links <- getLinks
-  nodes' <-
-    concat <$>
-    mapM
-      (\(ProcLink (n1, n2, _l, _shouldBeUsed)) -> do
-         ref1 <- liftIO $ newIORef $ instMap M.! n1
-         ref2 <- liftIO $ newIORef $ instMap M.! n2
-         return [(n1, ref1), (n2, ref2)])
-      links
-  let edges = map (\(ProcLink (n1, n2, l, _)) -> (n1, n2, l)) links
-      graph = ProcGraph $ mkGraph nodes' edges
-      buses = nub $ map (\(ProcLink (_, _, _, b)) -> b) links
+  -- FIXME: What to do here:
+  -- let instMap = instsToMap insts
+  -- links <- getLinks
+  -- nodes' <-
+  --   concat <$>
+  --   mapM
+  --     (\(ProcLink (n1, n2, _l, _shouldBeUsed)) -> do
+  --        ref1 <- liftIO $ newIORef $ instMap M.! n1
+  --        ref2 <- liftIO $ newIORef $ instMap M.! n2
+  --        return [(n1, ref1), (n2, ref2)])
+  --     links
+  -- let edges = map (\(ProcLink (n1, n2, l, _)) -> (n1, n2, l)) links
+  --     graph = ProcGraph $ mkGraph nodes' edges
+  --     buses = nub $ map (\(ProcLink (_, _, _, b)) -> b) links
   procs <- liftIO $ mapM newIORef insts -- nub $ map snd nodes'
   -- Save buses in state
   writeCsvHeader

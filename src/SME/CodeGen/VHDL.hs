@@ -326,6 +326,7 @@ else
    $ident:n := to_value(truncate(tmp));
 end if;
 fieldno := fieldno + 1;|]
+genValReader _ _ = error "Value not yet supported"
 
 genIntValReader :: String -> V.SequenceOfStatements
 genIntValReader x = [seqstms|read_csv_field(L, tmp);
@@ -512,6 +513,11 @@ genDefaultLit (Typed t) = go t
     go Signed {}   = return $ LitInt 0 noLoc
     go Unsigned {} = return $ LitInt 0 noLoc
     go Bool {}     = return $ LitFalse noLoc
+    -- FIXME: This should depend on the length of the array type
+    go Array {}    = return $ LitArray [0] noLoc
+    go Single {}   = return $ LitFloat 0 noLoc
+    go Double {}   = return $ LitFloat 0 noLoc
+    go String {}   = return $ LitString "" noLoc
 
 -- | Generate variable declarations and reset statements
 genVarDecls ::

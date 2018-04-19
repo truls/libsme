@@ -6,9 +6,8 @@ module SME.Warning
 
 import           Data.Loc
 
-import           Language.SMEIL.Pretty
-import           Language.SMEIL.Syntax (Nameable (..), Ref, ToString (..),
-                                        Typeness (..))
+--import           Language.SMEIL.Pretty
+import           Language.SMEIL.Syntax (ToString (..))
 
 data TypeCheckWarning where
   UnusedVariable :: (ToString a, Located a) => a -> TypeCheckWarning

@@ -512,6 +512,7 @@ setBusChanType ident ty b@BusDef {busShape = shape} =
                else o)
           (unBusShape shape)
   in b {busShape = shape'}
+setBusChanType _ _ t = t
 
 lookupTy ::
      (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness

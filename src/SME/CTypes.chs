@@ -116,6 +116,7 @@ instance Storable R.Value where
           {# set Value.value.f64 #} p $ CDouble i
         R.BoolVal i -> do
           {# set Value.value.boolean #} p $ i
+        R.ArrayVal _ _ -> error "Arrays not supported"
   {-# INLINE poke #-}
 
   peek p =

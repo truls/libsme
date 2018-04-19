@@ -22,7 +22,6 @@ import           Control.Monad.Identity (Identity)
 import           Control.Monad.Reader   (MonadReader, ReaderT, ask, local,
                                          runReaderT)
 import           Control.Monad.State    (MonadState)
-import           Data.String            (fromString)
 import qualified Data.Text              as T
 import           System.FilePath        ((<.>))
 
