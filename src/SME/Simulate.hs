@@ -490,8 +490,8 @@ mkBusInst exposed n bs busRef = do
                 if isPuppet
                   then do
                     chan <- mkExtChan bptr (toString i) ty
-                    ExternalChan i <$> newIORef defVal <*> pure (writePtr chan) <*>
-                      pure (readPtr chan)
+                    ExternalChan i <$> newIORef defVal <*> pure (writePtr chan)
+                                   <*> pure (readPtr chan)
                   else LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
                        newIORef defVal
            _ -> throw $ InternalCompilerError "Illegal bus chan")
