@@ -328,26 +328,29 @@ instance Nameable Function where
 
 data Statement
   = Assign { dest :: Name
-          ,  val  :: Expr
-          ,  loc  :: SrcLoc}
+           , val  :: Expr
+           , loc  :: SrcLoc }
   | If { cond :: Expr
-      ,  body :: [Statement]
-      ,  elif :: [(Expr, [Statement])]
-      ,  els  :: Maybe [Statement]
-      ,  loc  :: SrcLoc}
+       , body :: [Statement]
+       , elif :: [(Expr, [Statement])]
+       , els  :: Maybe [Statement]
+       , loc  :: SrcLoc }
   | For { var  :: Ident
-       ,  from :: Expr
-       ,  to   :: Expr
-       ,  body :: [Statement]
-       ,  loc  :: SrcLoc}
+        , from :: Expr
+        , to   :: Expr
+        , body :: [Statement]
+        , loc  :: SrcLoc }
   | Switch { value       :: Expr
-          ,  cases       :: [(Expr, [Statement])]
-          ,  defaultCase :: Maybe [Statement]
-          ,  loc         :: SrcLoc}
-  | Barrier { loc :: SrcLoc}
-  | Break { loc :: SrcLoc}
+           , cases       :: [(Expr, [Statement])]
+           , defaultCase :: Maybe [Statement]
+           , loc         :: SrcLoc }
+  | Trace { str  :: Literal
+          , subs :: [Expr]
+          , loc  :: SrcLoc }
+  | Barrier { loc :: SrcLoc }
+  | Break { loc :: SrcLoc }
   | Return { retVal :: Maybe Expr
-          ,  loc    :: SrcLoc}
+           , loc    :: SrcLoc }
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance Located Statement where
@@ -355,6 +358,7 @@ instance Located Statement where
   locOf If {..}      = locOf loc
   locOf For {..}     = locOf loc
   locOf Switch {..}  = locOf loc
+  locOf Trace {..}   = locOf loc
   locOf Barrier {..} = locOf loc
   locOf Break {..}   = locOf loc
   locOf Return {..}  = locOf loc

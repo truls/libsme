@@ -467,9 +467,9 @@ data BaseDefType a
             , ext          :: a
               -- Also track: Parameters
              }
-  | ParamDef { paramName :: Ident
-             , paramType :: ParamType
-             , ext       :: a }
+   | ParamDef { paramName :: Ident
+             , paramType  :: ParamType
+             , ext        :: a }
   deriving (Show)
 
 isBus :: BaseDefType a -> Bool

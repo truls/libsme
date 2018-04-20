@@ -159,6 +159,8 @@ instance Pretty Statement where
   ppr (Barrier _) = text "barrier" <> semi
   ppr (Break _) = text "break" <> semi
   ppr (Return v _) = text "return" <+> ppr v <> semi
+  ppr (Trace s p _) =
+    text "print" <> parens (ppr s <> comma <+> commasep (map ppr p)) <> semi
 
 instance Pretty Enumeration where
   ppr (Enumeration _ n fs _) =

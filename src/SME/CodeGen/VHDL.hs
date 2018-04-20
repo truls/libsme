@@ -228,6 +228,7 @@ genStm Break {} =
   return [seqstm|exit;|]
 genStm Barrier {} =
   return [seqstm|wait until rising_edge(clk);|]
+genStm Trace {} = return [seqstm|null;|]
 
 
 genGenerics :: TopDef -> [V.InterfaceDeclaration]

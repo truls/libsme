@@ -51,6 +51,8 @@ import           Data.Graph.Inductive.Query.DFS    (scc, topsort)
 import qualified Data.HashMap.Strict               as M
 import           Data.Loc                          (noLoc)
 import qualified Data.Map.Strict                   as MM
+import qualified Data.Text                         as T
+import qualified Data.Text.IO                      as TIO
 import           Data.Vector                       (fromList, (!), (//))
 
 import           Language.SMEIL.Syntax
@@ -267,6 +269,16 @@ evalStm Switch {..} = do
           mapM_ evalStm stms
           return True
         else evalCase sVal ss
+
+evalStm Trace {..} =
+  case str of
+    LitString {stringVal = stringVal} -> do
+      let s = T.splitOn "{}" stringVal
+      vals <- map (T.pack . show) <$> mapM evalExpr subs
+      let res = mconcat $ zipWith (<>) s vals
+      liftIO $ TIO.putStrLn res
+    _ -> error "Not a string lit"
+
 evalStm _ = error "Simulation of all statements not implemented yet"
 
 

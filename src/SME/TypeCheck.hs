@@ -13,8 +13,8 @@ module SME.TypeCheck
   ) where
 
 import           Control.Exception           (throw)
-import           Control.Monad               (foldM, forM, forM_, unless,
-                                              zipWithM)
+import           Control.Monad               (foldM, forM, forM_, mapAndUnzipM,
+                                              unless, zipWithM)
 import           Control.Monad.Except        (MonadError)
 
 import           Control.Monad.Identity      (Identity)
@@ -28,6 +28,7 @@ import qualified Data.List.NonEmpty          as N
 import           Data.Loc                    (Located (..), fromLoc, noLoc)
 import           Data.Maybe                  (fromMaybe, isNothing)
 import           Data.Monoid                 ((<>))
+import qualified Data.Text                   as T
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
@@ -316,6 +317,16 @@ checkStm Switch {..} = do
     Just stms -> Just <$> mapM checkStm stms
     Nothing   -> pure Nothing
   return $ Switch value' cases' defaultCase' loc
+checkStm Trace {..} =
+  case str of
+    LitString {stringVal = stringVal} -> do
+      let len = T.count "{}" stringVal
+      unless (len == length subs) (error "Length mismatch")
+      (_, subs') <- mapAndUnzipM checkExpr subs
+      return $ Trace str subs' loc
+    _ ->
+      -- TODO: Better error
+      error "First argument of trace must be a string literal"
 checkStm Barrier {..} = return $ Barrier loc
 checkStm Break {..} = return $ Break loc
 checkStm Return {..} = do
