@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes        #-}
 {-# LANGUAGE DuplicateRecordFields      #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -336,7 +337,11 @@ lookupEx e m = case M.lookup (toString e) m of
 -- | Tries to look up an element 'i' in map 'm'. Performs action 'a' if
 -- successful and throws an error otherwise
 ensureUndef ::
-     (MonadRepr s m, Nameable d, ToString a, Located a) => a -> M.HashMap String d -> m b -> m b
+     (Nameable d, ToString a, Located a)
+  => a
+  -> M.HashMap String d
+  -> m b
+  -> m b
 ensureUndef i m a =
   case M.lookup (toString i) m of
     Just r  -> throw $ DuplicateName i (nameOf r)

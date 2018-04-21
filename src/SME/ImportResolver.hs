@@ -14,7 +14,6 @@ module SME.ImportResolver
 import           Control.Arrow               (first)
 import           Control.Exception           (throw)
 import           Control.Monad               (unless)
-import           Control.Monad.Catch         (MonadThrow)
 import           Control.Monad.State.Strict
 import qualified Data.Bimap                  as B
 import           Data.Generics.Uniplate.Data (transformBiM, universeBi)
@@ -79,7 +78,7 @@ toModName ids = T.intercalate "_" (map toText (N.toList ids))
 importError :: FilePath -> SrcLoc -> IO ()
 importError f ss = throw $ ImportNotFoundError f ss
 
-parseFile :: (MonadThrow m, MonadIO m) => FilePath -> SrcLoc -> m DesignFile
+parseFile :: (MonadIO m) => FilePath -> SrcLoc -> m DesignFile
 parseFile fp ss = do
   liftIO $ doesFileExist fp >>= flip unless (importError fp ss)
   modSrc <- liftIO $ TIO.readFile fp
@@ -196,12 +195,12 @@ processDeps Process {..} = map refOf (universeBi body :: [Name])
 networkDeps :: Network -> [Ref]
 networkDeps Network {..} = map refOf (universeBi netDecls :: [Name])
 
-addNameMap :: (MonadIO m, MonadThrow m) => Ident -> Ref -> PaM m ()
+addNameMap :: (Monad m) => Ident -> Ref -> PaM m ()
 addNameMap n1 n2 = do
   s <- get
   when (refOf n1 /= n2) $ put $ s {nameMap = B.insert n1 n2 (nameMap s)}
 
-lookupName :: (MonadIO m, MonadThrow m) => Ref -> PaM m (Maybe Ident)
+lookupName :: (Monad m) => Ref -> PaM m (Maybe Ident)
 lookupName name --trace (show name)
  = do
   s <- gets nameMap
@@ -211,8 +210,7 @@ lookupName name --trace (show name)
 -- | Given a list of idents, try to look up the longest possible prefix of the
 -- list in the map. Returns maybe a tuple containing the length of matched name
 -- chain and the result of the lookup
-lookupPrefix ::
-     (MonadIO m, MonadThrow m) => Ref -> PaM m (Maybe (Int, Ident))
+lookupPrefix :: (Monad m) => Ref -> PaM m (Maybe (Int, Ident))
 lookupPrefix = go . reverse . N.toList
   where
     go [] = return Nothing
@@ -223,8 +221,7 @@ lookupPrefix = go . reverse . N.toList
 
 -- | Transform top-level names and add maps, tracking the transformed names in a
 -- map
-renameModule ::
-     (MonadThrow m, MonadIO m) => Ref -> Bool -> DesignFile -> PaM m DesignFile
+renameModule :: (Monad m) => Ref -> Bool -> DesignFile -> PaM m DesignFile
 renameModule n asSpecific f =
   transformBiM renameProc f >>= transformBiM renameNet
   -- Pre populate map with possible module names
@@ -244,8 +241,9 @@ renameModule n asSpecific f =
         -- TODO: Avoid the _ prefix by explicitly checking for name clashes
       in Ident
            ((if T.null n'
-              then ""
-              else "_" <> n' <> "_") <> val)
+               then ""
+               else "_" <> n' <> "_") <>
+            val)
            loc
     addMaps name =
       addNameMap
@@ -255,7 +253,7 @@ renameModule n asSpecific f =
            else n <> refOf name)
 
 -- | Rename all references to renamed modules accordingly
-renameRefs :: (MonadThrow m, MonadIO m) => DesignFile -> PaM m DesignFile
+renameRefs :: (Monad m) => DesignFile -> PaM m DesignFile
 renameRefs = transformBiM go
   where
     go o@Name {..} =
@@ -274,7 +272,7 @@ renameRefs = transformBiM go
 -- occur.
 -- TODO: Use forward-passed list of defined names to ensure that we don't rename
 -- modules such that name-clashes will occur
-parseModule :: (MonadThrow m, MonadIO m) => ModuleCtx -> PaM m DesignFile
+parseModule :: (MonadIO m) => ModuleCtx -> PaM m DesignFile
 parseModule ModuleCtx {..} = do
   res <- liftIO $ parseFile modulePath stmLocation
   let imports = universeBi res :: [Import]
@@ -324,8 +322,7 @@ parseModule ModuleCtx {..} = do
 
 -- | Resolves all imports and inlines them returning a "flat" SMEIL
 -- program. Imported entities are inlined as appropriate
-resolveImports ::
-     (MonadThrow m, MonadIO m) => FilePath -> m (DesignFile, M.Map String Ref)
+resolveImports :: (MonadIO m) => FilePath -> m (DesignFile, M.Map String Ref)
 resolveImports fp = do
   fp' <- liftIO $ makeAbsolute fp
   (m, s) <-
