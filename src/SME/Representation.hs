@@ -383,16 +383,11 @@ instance Ord Value
   (IntVal a) `compare` (BoolVal True) = a `compare` 1
   (IntVal a) `compare` (SingleVal b) = fromIntegral a `compare` b
   (IntVal a) `compare` (DoubleVal b) = fromIntegral a `compare` b
-  a@(BoolVal True) `compare` b =
-    case b `compare` a of
-      LT -> GT
-      GT -> LT
-      EQ -> EQ
-  a@(BoolVal False) `compare` b =
-    case b `compare` a of
-      LT -> GT
-      GT -> LT
-      EQ -> EQ
+  (BoolVal a) `compare` (BoolVal b) = a `compare` b
+  (BoolVal True) `compare` (IntVal b) = 1 `compare` b
+  (BoolVal False) `compare` (IntVal b) = 0 `compare` b
+  (BoolVal _) `compare` (SingleVal _) = GT -- TODO
+  (BoolVal _) `compare` (DoubleVal _) = GT -- TODO
   (DoubleVal a) `compare` (DoubleVal b) = a `compare` b
   (DoubleVal a) `compare` (IntVal b) = a `compare` fromIntegral b
   (DoubleVal a) `compare` (BoolVal False) = a `compare` 1
