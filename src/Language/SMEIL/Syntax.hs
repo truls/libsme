@@ -588,7 +588,10 @@ instance Located Literal where
 
 -- | Returns the minimum number of bits required to represent a number
 bitSize :: forall a. (Integral a) => a -> a
-bitSize = (+ 1) . (floor :: Double -> a) . logBase 2 . fromIntegral . abs
+bitSize a
+  | abs a > 0 =
+    ((+ 1) . (floor :: Double -> a) . logBase 2 . fromIntegral . abs) a
+  | otherwise = 1
 
 instance Typed Literal where
   typeOf LitInt {..}
