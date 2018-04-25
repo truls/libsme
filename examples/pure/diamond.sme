@@ -1,0 +1,22 @@
+proc A ()
+    instance b1 of B();
+    instance c1 of C();
+{}
+
+proc B()
+    instance C2 of C();
+    instance d1 of D();
+{}
+
+proc C ()
+    instance d1 of D();
+    instance b2 of B();
+{}
+
+proc D ()
+    //instance d2 of D();
+{}
+
+network N () {
+    instance _ of D();
+}

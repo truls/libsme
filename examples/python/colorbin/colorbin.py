@@ -60,7 +60,7 @@ class CollectResults(SimulationProcess):
             self.res.append((self.result["low"], self.result["med"],
                                 self.result["high"]))
 
-@extends("collector.sme")
+@extends("collector.sme", ["--trace", "trace.csv"])
 class ColorBin(Network):
     def wire(self, result):
         # print("Wire: ", args, kwargs)
@@ -81,6 +81,7 @@ if __name__ == "__main__":
     result = []
     sme.network = ColorBin("", "ColorBin", result)
     sme.network.clock(352686)
+    #sme.network.clock(20)
 
     if len(result) > 0:
         result = functools.reduce(lambda x, y: (x[0] + y[0], x[1] + y[1],

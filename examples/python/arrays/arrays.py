@@ -20,17 +20,18 @@ class Control(SimulationProcess):
         self.state = self.STORE
 
     def run(self):
+        self.out["valid"] = True
         self.out["mode"] = self.state
         self.out["pos"] = self.n % 10
         self.out["val"] = self.n
-        if self.n % 9 == 0:
+        if self.n % 10 == 0:
             if self.state == self.STORE:
                 self.state = self.LOAD
             else:
                 self.state = self.STORE
         self.n += 1
 
-@extends("arrays.sme")
+@extends("arrays.sme", ["-t", "trace.csv", "-f"])
 class Arrays(Network):
     def wire(self, result):
         arr_out = ExternalBus("arr_out")

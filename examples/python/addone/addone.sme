@@ -2,12 +2,19 @@ proc plusone(in inbus, const val)
     exposed bus plusout {
        val: i32;
     };
-    const one: i2 = 2;
-    var two: i2 = 0;
+    const one: i3 = 10;
+    //var two: i32 = 0;
 {
     if (inbus.valid) {
-        two = two + val;
-        plusout.val = two; //inbus.val + two;
+        //two = two + val;
+        //plusout.val = two; //inbus.val + two;
+        if (one == 0) {
+            plusout.val = inbus.val + 1;
+        } elif (one == 1) {
+            plusout.val = inbus.val + 1;
+        } else {
+            plusout.val = inbus.val + 20;
+        }
     }
 }
 

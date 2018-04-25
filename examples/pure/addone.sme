@@ -1,0 +1,72 @@
+// proc id()
+//     bus idbus {
+//         val: i32;
+//     };
+// {
+//     idbus.val = plusone.plusonebus.val;
+// }
+
+// proc plusone()
+
+//     bus plusonebus {
+//         val: i32;
+//     };
+// {
+//     plusonebus.val = id.idbus.val + 1;
+// }
+
+// network plusone_net() {
+//     instance _ of id();
+//     instance _ of plusone();
+// }
+
+
+// proc id(in inbus, out outbus) {
+//     outbus.val = inbus.val;
+// }
+
+// proc plusone(in inbus, out outbus) {
+//     outbus.val = inbus.val + 1;
+// }
+
+// network plusone_net() {
+//     bus idout {
+//         val : i32;
+//     };
+//     bus plusoneout {
+//         val : i32;
+//     };
+//     instance _ of id(plusoneout, idout);
+//     instance _ of plusone(idout, plusoneout);
+// }
+
+proc id(in inbus)
+    bus idout {
+        val: i32;
+    };
+{
+    idout.val = inbus.val;
+}
+
+// plusone proc
+proc plusone(in inbus, const val)
+    bus plusout {
+       val: i32;
+    };
+    const one: i2 = 2;
+    var two: i2 = 2;
+{
+    two = two + val;
+    plusout.val = two; //inbus.val + two;
+}
+
+network plusone_net() {
+    const foo: i4 = 10;
+    instance plusone_inst of plusone(id_inst.idout, 10);
+    instance id_inst of id(plusone_inst.plusout);
+}
+
+// network top_net() {
+//     instance a1 of plusone_net();
+//     instance a2 of plusone_net();
+// }

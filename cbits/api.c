@@ -74,6 +74,10 @@ void sme_set_sim_state(SmeCtx* ctx, HsStablePtr sim_state) {
   ctx->sim_state = sim_state;
 }
 
+HsStablePtr sme_get_sim_state(SmeCtx* ctx) {
+  return ctx->sim_state;
+}
+
 /* Creates a new named bus */
 Bus* sme_add_bus(SmeCtx* ctx, char* name) {
   Bus* bus = malloc(sizeof(Bus));
@@ -256,7 +260,7 @@ sme_init()
 }
 
 bool
-sme_open_file(SmeCtx* ctx, const char* file)
+sme_open_file(SmeCtx* ctx, const char* file, int argv, char** argc)
 {
   return hs_sme_load_file(ctx, (HsPtr) file);
 }

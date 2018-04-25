@@ -13,7 +13,7 @@
 module SME.Simulate
   ( simulate
   , SimEnv
-  , SimM (..)
+  , SimM(..)
   , newSteppingSim
   , procStep
   , busStep
@@ -24,11 +24,10 @@ module SME.Simulate
 import           Control.Exception                 (throw)
 import           Control.Monad                     (foldM, forM, forM_, mapM_,
                                                     replicateM, replicateM_,
-                                                    unless, void, when,
-                                                    zipWithM)
+                                                    unless, when, zipWithM)
 import           Data.Bits                         (complement, shiftL, shiftR,
                                                     xor, (.&.), (.|.))
-import           Data.IORef                        (IORef, modifyIORef,
+import           Data.IORef                        (IORef, modifyIORef',
                                                     newIORef, readIORef,
                                                     writeIORef)
 import           Data.List                         (nub, sort, sortBy, sortOn)
@@ -52,7 +51,7 @@ import qualified Data.HashMap.Strict               as M
 import           Data.Loc                          (noLoc)
 import qualified Data.Map.Strict                   as MM
 import qualified Data.Text                         as T
-import qualified Data.Text.IO                      as TIO
+import qualified Data.Text.IO                      as T
 import           Data.Vector                       (fromList, (!), (//))
 
 import           Language.SMEIL.Syntax
@@ -61,13 +60,13 @@ import           SME.CsvWriter
 import           SME.Error
 import           SME.Representation
 
---import qualified Debug.Trace                       as D
+import           Debug.Trace
 --import           Text.Show.Pretty                  (ppShow)
-trace :: String -> a -> a
-trace _ = id
+-- trace :: String -> a -> a
+-- trace _ = id
 
-traceM :: (Applicative f) => String -> f ()
-traceM _ = pure ()
+-- traceM :: (Applicative f) => String -> f ()
+-- traceM _ = pure ()
 
 
 -- import SME.APITypes
@@ -276,7 +275,7 @@ evalStm Trace {..} =
       let s = T.splitOn "{}" stringVal
       vals <- map (T.pack . show) <$> mapM evalExpr subs
       let res = mconcat $ zipWith (<>) s vals
-      liftIO $ TIO.putStrLn res
+      liftIO $ T.putStrLn res
     _ -> error "Not a string lit"
 
 evalStm _ = error "Simulation of all statements not implemented yet"
@@ -295,9 +294,10 @@ evalExpr PrimName {..} =
   getValueVtab name
 evalExpr PrimLit {..} =
   pure $ toValue lit
+evalExpr Parens {..} = evalExpr expr
 evalExpr _ = error "Function calls not implemented yet"
 
--- FIXME: Find a better way of doing this
+-- TODO: Find a better way of doing this
 evalBinOp :: BinOp -> Value -> Value -> SimM Value
 evalBinOp PlusOp  {} (IntVal i)    (IntVal j)      = pure $ IntVal $ i + j
 evalBinOp PlusOp  {} (DoubleVal i) (DoubleVal j)   = pure $ DoubleVal $ i + j
@@ -462,19 +462,24 @@ instance ToValue Value where
 -- Typeness parameter such that it, e.g., returns signed types if existing type
 -- is signed
 valueToType :: Value -> Typeness -> Typeness
-valueToType (IntVal v) (Typed Signed {..}) =
+valueToType (IntVal v) (Typed Signed {..})   =
   Typed $ Signed (Just (bitSize v)) loc
 valueToType (IntVal v) (Typed Unsigned {..}) =
   Typed $ Unsigned (Just (bitSize v)) loc
-valueToType (IntVal v) _ =
+valueToType v (Typed Array {arrLength = al, innerTy = iTy}) =
+  let arrTy =
+        case valueToType v (Typed iTy) of
+          Typed t' -> t'
+          Untyped  -> error "Untyped" -- This should never happen
+  in Typed $ Array al arrTy noLoc
+valueToType (IntVal v) _
   -- FIXME: What to do here? Either we fail since an internal invariant has been
   -- violated or we stick with the current implementation
-  typeOf v
-valueToType (BoolVal _) t = t
-valueToType (SingleVal _) t = t
-valueToType (DoubleVal _) t = t
+ = typeOf v
+valueToType (BoolVal _) t                      = t
+valueToType (SingleVal _) t                    = t
+valueToType (DoubleVal _) t                    = t
 valueToType (ArrayVal _ v) t = valueToType (maximum v) t
-
 
 -- | Creates a bus instance either locally or in the C-interface depending on if
 -- the bus is stored locally or not.
@@ -698,7 +703,7 @@ getInVtab ::  Ident -> SimM SimRef
 getInVtab i =
   (M.lookup i <$> getCurVtable) >>= \case
     Just v -> pure v
-    Nothing -> throw $ InternalCompilerError "Value not found"
+    Nothing -> throw $ InternalCompilerError ("Value not found " ++ show i)
 
 -- | Sets a value in current VTab
 setValueVtab :: Name -> Value -> SimM ()
@@ -789,12 +794,12 @@ setBusVal i BusInst {..} v =
   case MM.lookup i chans of
     Just LocalChan {localWrite = write, maxBusVal = maxBusVal} ->
       liftIO $ do
-        modifyIORef maxBusVal (`max` absValue v)
+        modifyIORef' maxBusVal (`max` absValue v)
         writeIORef write v
     Just ExternalChan {extWrite = write, maxBusVal = maxBusVal} -> do
       traceM ("Writing external channel " ++ show v)
       liftIO $ do
-        modifyIORef maxBusVal (`max` absValue v)
+        modifyIORef' maxBusVal (`max` absValue v)
         poke write v
     Nothing -> throw $ InternalCompilerError "undefined bus channel"
 
@@ -806,7 +811,7 @@ getBusVal i BusInst {..} = do
     Just ExternalChan {extRead = readEnd, maxBusVal = maxBV} -> do
       res <- liftIO $ peek readEnd
       -- TODO: Handle this on propagation rather than doing it on every read
-      liftIO $ modifyIORef maxBV (`max` res)
+      liftIO $ modifyIORef' maxBV (`max` res)
       trace ("Reading external channel " ++ show res ++ " " ++ show i) $
         return res
     Nothing -> throw $ InternalCompilerError "undefined bus channel"
@@ -984,7 +989,11 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
 -- | Sets up the simulation sets up the simulation environment
 setupSimEnv :: Maybe SmeCtxPtr -> SimM ()
 setupSimEnv ptr = do
-  csv <- liftIO $ mkCsvWriter "trace.csv"
+  csv <-
+    getConfig traceFile >>= \case
+      Just a -> liftIO (Just <$> mkCsvWriter a)
+      Nothing -> pure Nothing
+  --"trace.csv"
   --csv <- Nothing
   modify
     (\x ->
@@ -997,7 +1006,7 @@ setupSimEnv ptr = do
            , puppetMode = ptr
            , simProcs = []
            , simBuses = []
-           , csvWriter = Just csv
+           , csvWriter = csv
            }
        } :: SimEnv)
   labelInstances
@@ -1006,7 +1015,7 @@ setupSimEnv ptr = do
   -- Mark the entity as top-level
   -- TODO: Move the whole graph generation part out of the simulator since it is
   -- technically unrelated to the simulator
-  updateTopDef entry (\x -> x { topLevel = True })
+  updateTopDef entry (\x -> x {topLevel = True})
   tree <- lookupTopDef entry >>= instEntity M.empty
   let insts = flattenInstTree tree
   -- traceM $ ppShow tree
@@ -1085,10 +1094,11 @@ busStep env =
 
 finalizeSim :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
 finalizeSim env =
-  runStep env $
-  gets (csvWriter . envExt) >>= \case
-    Just a -> liftIO $ finalizeCsv a
-    Nothing -> return ()
+  runStep env $ do
+    applyTypes
+    gets (csvWriter . envExt) >>= \case
+      Just a -> liftIO $ finalizeCsv a
+      Nothing -> return ()
 
 toSimEnv :: Env -> SimEnv
 toSimEnv = (<$) EmptyExt
@@ -1096,23 +1106,35 @@ toSimEnv = (<$) EmptyExt
 runSimM :: Env -> SimM a -> IO (Either TypeCheckErrors a, SimEnv)
 runSimM env act = runReprM (toSimEnv env) (unSimM act)
 
-simulate :: Int -> Env -> IO () --(Either TypeCheckErrors SimEnv)
-simulate its e =
-  void $
-  runSimM e $ do
-    setupSimEnv Nothing
-    procs <- gets (simProcs . envExt)
-    buses <- gets (simBuses . envExt)
-    replicateM_ its (runSimulation procs buses)
-    gets (csvWriter . envExt) >>= \case
-      Just a -> liftIO $ finalizeCsv a
-      Nothing -> return ()
-  -- (res, env) <-
-  -- return $
-  --   case res of
-  --     Right () -> Right env
-  --     Left l   -> Left l
-  -- TODO: Theres a lot of duplication i the following:
+
+simulate :: Int -> Env -> IO (Either TypeCheckErrors SimEnv)
+simulate its e = do
+  (res, env) <-
+    runSimM e $ do
+      setupSimEnv Nothing
+      procs <- gets (simProcs . envExt)
+      buses <- gets (simBuses . envExt)
+      replicateM_ its (runSimulation procs buses)
+      applyTypes
+      gets (csvWriter . envExt) >>= \case
+        Just a -> liftIO $ finalizeCsv a
+        Nothing -> return ()
+  return $
+    case res of
+      Right () -> Right env
+      Left l   -> Left l
+
+-- | Extract the maximum observed bus and variable values and use them to set
+-- updated types for in the program
+applyTypes :: SimM ()
+applyTypes = do
+  procs' <- gets (simProcs . envExt)
+  procs <- liftIO $ mapM readIORef procs'
+  buses <- gets (simBuses . envExt)
+  updateVarTypes procs
+  updateBusTypes buses
+  return ()
+
 chanValList :: [BusInst] -> IO [((Ref, Ident), Value)]
 chanValList b =
   maxInGroup . sortBy (\(x, _) (y, _) -> compare x y) <$> concatMapM go b
@@ -1120,6 +1142,7 @@ chanValList b =
     go BusInst {..} =
       let vals = MM.elems chans
       in map (\(n, v) -> ((ref, n), v)) <$> mapM chanMaxVal vals
+
 
 -- TODO: Replace by groupBy/maximumBY
 maxInGroup :: (Eq a, Ord b) => [(a, b)] -> [(a, b)]
@@ -1133,9 +1156,12 @@ maxInGroup (i1:i2:is) = go i1 (i2 : is)
       | otherwise = go c es
     go c [] = [c]
 
+
+-- | Return the maximum value logged for a bus
 chanMaxVal :: BusChan -> IO (Ident, Value)
 chanMaxVal LocalChan {..}    = (name, ) <$> readIORef maxBusVal
 chanMaxVal ExternalChan {..} = (name, ) <$> readIORef maxBusVal
+
 
 updateBusTypes :: [BusInst] -> SimM ()
 updateBusTypes bs = do
@@ -1144,10 +1170,13 @@ updateBusTypes bs = do
     forM
       maxvals
       (\((r, i), v) -> do
-         t <- lookupTy (r <> refOf i)
+         t <- withScope (N.head r) $ lookupTy (r <> refOf i)
          let t' = valueToType v t
          return ((r, i), t'))
-  forM_ maxtypes (\((r, i), t) -> updateDef r (setBusChanType i t))
+  forM_
+    maxtypes
+    (\((r, i), t) -> withScope (N.head r) $ updateDef r (setBusChanType i t))
+
 
 varValList :: [ProcInst] -> [(Ref, Value)]
 varValList ps =
@@ -1156,8 +1185,9 @@ varValList ps =
     go ProcInst {..} =
       mapMaybe (uncurry (simRefMaxVal fromEnt)) (M.toList valueTab)
     simRefMaxVal r i MutVal {maxVal = maxVal} =
-      Just (refOf i <> refOf r, maxVal)
+      Just (refOf r <> refOf i, maxVal)
     simRefMaxVal _ _ _ = Nothing
+
 
 updateVarTypes :: [ProcInst] -> SimM ()
 updateVarTypes ps = do
@@ -1166,19 +1196,10 @@ updateVarTypes ps = do
     forM
       maxvals
       (\(r, v) -> do
-         t <- lookupTy r
+         t <- withScope (N.head r) $ lookupTy r
          let t' = valueToType v t
          return (r, t'))
-  forM_ maxtypes $ \(r, t) -> updateDef r (setType t)
-
-applyTypes :: SimM ()
-applyTypes = do
-  procs' <- gets (simProcs . envExt)
-  procs <- liftIO $ mapM readIORef procs'
-  buses <- gets (simBuses . envExt)
-  updateVarTypes procs
-  updateBusTypes buses
-  return ()
+  forM_ maxtypes $ \(r, t) -> withScope (N.head r) $ updateDef r (setType t)
 
 
 

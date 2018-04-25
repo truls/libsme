@@ -13,8 +13,8 @@ module SME.TypeCheck
   ) where
 
 import           Control.Exception           (throw)
-import           Control.Monad               (foldM, forM, forM_, mapAndUnzipM,
-                                              unless, zipWithM)
+import           Control.Monad               (foldM, forM, forM_, unless,
+                                              zipWithM)
 import           Control.Monad.Except        (MonadError)
 
 import           Control.Monad.Identity      (Identity)
@@ -168,8 +168,7 @@ unifyTypes ::
 unifyTypes expected t1 t2 = do
   res <- go t1 t2
   case expected of
-    Just t ->
-      unifyTypes Nothing (Typed t) res
+    Just t  -> unifyTypes Nothing (Typed t) res
       -- unless (Typed t == res) $ throw $ TypeMismatchError (Typed t) res
       -- return (Typed t)
     Nothing -> return res
@@ -178,8 +177,10 @@ unifyTypes expected t1 t2 = do
     go Untyped t               = pure t
     go t Untyped               = pure t
     go (Typed t1') (Typed t2') = Typed <$> go' t1' t2'
-    go' (Unsigned l1 loc) (Unsigned l2 _) = return $ Unsigned (max l1 l2) loc
-    go' (Signed l1 loc) (Signed l2 _) = return $ Signed (max l1 l2) loc
+    go' (Unsigned (Just l1) loc) (Unsigned (Just l2) _) =
+      return $ Unsigned (Just (max l1 l2)) loc
+    go' (Signed (Just l1) loc) (Signed (Just l2) _) =
+      return $ Signed (Just (max l1 l2)) loc
     go' (Unsigned (Just l1) loc) (Signed (Just l2) _) -- FIXME: Does formula below makes sense?
      =
       return $
@@ -199,6 +200,25 @@ unifyTypes expected t1 t2 = do
                then 1
                else 0)))
         loc
+    go' (Unsigned Nothing loc) (Unsigned (Just s) _) =
+      return (Unsigned (Just s) loc)
+    go' (Unsigned (Just s) loc) (Unsigned Nothing _) =
+      return (Unsigned (Just s) loc)
+    go' (Signed Nothing loc) (Unsigned (Just s) _) =
+      return (Signed (Just s) loc)
+    go' (Signed (Just s) loc) (Unsigned Nothing _) =
+      return (Signed (Just s) loc)
+    go' (Signed Nothing loc) (Signed (Just s) _) = return (Signed (Just s) loc)
+    go' (Signed (Just s) loc) (Signed Nothing _) = return (Signed (Just s) loc)
+    go' (Unsigned Nothing loc) (Signed (Just s) _) =
+      return (Signed (Just s) loc)
+    go' (Unsigned (Just s) loc) (Signed Nothing _) =
+      return (Signed (Just s) loc)
+    go' (Unsigned Nothing loc) (Signed Nothing _) = return (Signed Nothing loc)
+    go' (Signed Nothing loc) (Unsigned Nothing _) = return (Signed Nothing loc)
+    go' (Signed Nothing loc) (Signed Nothing _) = return (Signed Nothing loc)
+    go' (Unsigned Nothing loc) (Unsigned Nothing _) =
+      return (Unsigned Nothing loc)
     go' t1'@(Array l1 ity1 _loc) t2'@(Array l2 ity2 loc) =
       unifyTypes Nothing (Typed ity1) (Typed ity2) >>= \case
         (Typed ity) -> do
@@ -206,7 +226,6 @@ unifyTypes expected t1 t2 = do
           return (Array l1 ity loc)
         Untyped -> throw $ TypeMismatchError (Typed t2') (Typed t1')
     go' (Bool loc) (Bool _) = return (Bool loc)
-    -- TODO: Support unsized integers
     go' t1' t2' = throw $ TypeMismatchError (Typed t2') (Typed t1')
 
 -- | Flips signed to unsigned and vice-versa
@@ -223,6 +242,9 @@ flipSign (Typed t) = Typed $ go t
     go (Unsigned (Just l) loc) = Signed (Just (l + 1)) loc
     go t1 = t1
 flipSign Untyped = Untyped
+
+checkExpr' :: (MonadRepr s m) => Expr -> m Expr
+checkExpr' e = snd <$> checkExpr e
 
 -- | Check expression and update references as needed
 checkExpr :: (MonadRepr s m) => Expr -> m (Typeness, Expr)
@@ -267,6 +289,9 @@ checkExpr Unary {..} = do
           NotOp l   -> Typed (Bool l)
           _         -> t'
   return (t'', Unary t'' unOp e' loc)
+checkExpr Parens {..} = do
+  (t', e') <- checkExpr expr
+  return (t', Parens t' e' loc)
 
 -- | Check statements and update references as needed
 checkStm :: (MonadRepr s m) => Statement -> m Statement
@@ -306,27 +331,31 @@ checkStm For {..}
       mapM checkStm body
   return $ For var from' to' body' loc
 checkStm Switch {..} = do
-  (_valTy, value') <- checkExpr value
-  cases' <- mapM (\(e, stms) -> do
-                     stms' <- mapM checkStm stms
-                     return (e, stms')
-                 ) cases
+  value' <- checkExpr' value
+  cases' <-
+    mapM
+      (\(e, stms) -> do
+         e' <- checkExpr' e
+         stms' <- mapM checkStm stms
+         return (e', stms'))
+      cases
   -- TODO: Make sure that the types of all the cases checks out and matches type
   -- of value
-  defaultCase' <- case defaultCase of
-    Just stms -> Just <$> mapM checkStm stms
-    Nothing   -> pure Nothing
+  defaultCase' <-
+    case defaultCase of
+      Just stms -> Just <$> mapM checkStm stms
+      Nothing   -> pure Nothing
   return $ Switch value' cases' defaultCase' loc
 checkStm Trace {..} =
   case str of
     LitString {stringVal = stringVal} -> do
       let len = T.count "{}" stringVal
       unless (len == length subs) (error "Length mismatch")
-      (_, subs') <- mapAndUnzipM checkExpr subs
+      subs' <- mapM checkExpr' subs
       return $ Trace str subs' loc
-    _ ->
+    _
       -- TODO: Better error
-      error "First argument of trace must be a string literal"
+     -> error "First argument of trace must be a string literal"
 checkStm Barrier {..} = return $ Barrier loc
 checkStm Break {..} = return $ Break loc
 checkStm Return {..} = do
@@ -429,17 +458,18 @@ buildDeclTab ::
 buildDeclTab ctx = foldM go M.empty
   where
     go m (VarDecl v@Variable {..}) = do
-      defaultVal <- case val of
-        Just v' -> Just <$> exprReduceToLiteral v'
-        Nothing -> pure Nothing
+      defaultVal <-
+        case val of
+          Just v' -> Just <$> exprReduceToLiteral v'
+          Nothing -> pure Nothing
       ensureUndef name m $
-        return $ M.insert (toString name) (VarDef name v Unused defaultVal Void) m
+        return $
+        M.insert (toString name) (VarDef name v Unused defaultVal Void) m
     go m (ConstDecl c@Constant {..}) = do
       val' <- exprReduceToLiteral val
       ensureUndef name m $
         return $ M.insert (toString name) (ConstDef name c Unused val' Void) m
-    go m (BusDecl b@Bus {..}) =
-      mkBusDecl m ctx b
+    go m (BusDecl b@Bus {..}) = mkBusDecl m ctx b
     go m (FuncDecl f@Function {..}) =
       ensureUndef name m $
       return $ M.insert (toString name) (FunDef name f Void) m
@@ -450,19 +480,22 @@ buildDeclTab ctx = foldM go M.empty
       -- is explicitly assigned the value n, the subsequent fields f_{n+1} will
       -- be assigned the value n + 1
      = do
-      enumFields <- fillEnum 0 fields
+      enumFields <- fillEnum 0 (N.toList fields)
       let maxVal = maximum (map snd enumFields)
       let minVal = minimum (map snd enumFields)
       -- An enum is regular if its first (and minimum) value is 0 and its last
       -- value is the maximum and the distance between every element is exactly
-      -- 1.
-      -- TODO: Handle single-element enums.
       let isRegular =
-            minVal == 0 &&
-            all
-              (== 1)
-              (snd $
-               mapAccumR (\x y -> (y, x - y)) maxVal (init $ map snd enumFields))
+            if length fields == 1
+              then minVal == 0
+              else minVal == 0 &&
+                   all
+                     (== 1)
+                     (snd $
+                      mapAccumR
+                        (\x y -> (y, x - y))
+                        maxVal
+                        (init $ map snd enumFields))
       res <-
         ensureUndef name m $
         return $
@@ -470,11 +503,12 @@ buildDeclTab ctx = foldM go M.empty
           (toString name)
           (EnumDef name enumFields isRegular (e {ty = typeOf maxVal}) Void)
           m
-      -- Insert fields of enum as entries into the entity symbol tab
+           -- Insert fields of enum as entries into the entity symbol tab
       foldM
-        (\m' (f, v) ->
-           ensureUndef f m' $
-           return $ M.insert (toString f) (EnumFieldDef f v name Void) m')
+        (\m' (field, v) ->
+           ensureUndef field m' $
+           return $
+           M.insert (toString field) (EnumFieldDef field v name Void) m')
         res
         enumFields
       where
@@ -486,8 +520,7 @@ buildDeclTab ctx = foldM go M.empty
           rest <- fillEnum (expr' + 1) restFields
           return $ (ident, expr') : rest
         fillEnum _ [] = return []
-    go m (InstDecl i) =
-      mkInstDecl m i
+    go m (InstDecl i) = mkInstDecl m i
     go _ GenDecl {} = error "TODO: Generator declarations are unhandeled"
 
 mkInstDecl :: (MonadRepr s m) => SymTab -> Instance -> m SymTab
@@ -510,7 +543,6 @@ mkInstDecl m i@Instance {..} =
           name
           i
           (ensureSingleRef elName)
-                   --(map refOf pars)
           isAnon
           Void)
        m
@@ -650,7 +682,7 @@ inferParamTypes insts = do
                  -- TODO: We need to make sure that e refers to only constant
                  -- values here (i.e., only constants and cont parameters)
                  -- Restrictions like this could be placed in a reader monad
-                 (_, eTy) <- checkExpr e
+                 eTy <- checkExpr' e
                  pure (forName, ConstPar (typeOf eTy))
                In _ -> mkBusDef Input e forName count instantiated
                Out _ -> mkBusDef Output e forName count instantiated
@@ -735,7 +767,8 @@ buildEnv df = do
 -- annoations
 --typeCheck :: (MonadIO m) => DesignFile -> m DesignFile
 -- typeCheck :: DesignFile -> DesignFile
-typeCheck :: DesignFile -> IO Env
-typeCheck df = do
-  let (_, env) = runReprMidentity (mkEnv Void) (runWriterT $ unTyM (buildEnv df))
+typeCheck :: DesignFile -> Config -> IO Env
+typeCheck df conf = do
+  let (_, env) =
+        runReprMidentity (mkEnv conf Void) (runWriterT $ unTyM (buildEnv df))
   return env

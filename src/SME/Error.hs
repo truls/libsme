@@ -9,6 +9,7 @@ module SME.Error
   , CompilerError (..)
   , TypeCheckErrors(..)
   , RenderError(..)
+  , NameMap
   ) where
 
 import           Control.Exception
@@ -20,6 +21,9 @@ import           Data.Maybe            (fromMaybe)
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax (Nameable (..), Ref, ToString (..),
                                         Typeness (..))
+
+type NameMap = M.Map String Ref
+
 newtype CompilerError =
   CompilerError String
   deriving (Exception)
@@ -92,7 +96,7 @@ instance RenderError (M.Map String Ref) TypeCheckErrors where
     " is actually named " ++ toString expected ++ "."
   renderError _ e = show e
 
-origName :: (Nameable a) => a -> M.Map String Ref -> String
+origName :: (Nameable a) => a -> NameMap -> String
 origName k m = case M.lookup (toString (nameOf k)) m of
   Just r  -> pprrString r
   Nothing -> toString (nameOf k)

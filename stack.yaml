@@ -15,7 +15,7 @@
 # resolver:
 #  name: custom-snapshot
 #  location: "./custom-snapshot.yaml"
-resolver: nightly-2018-04-09
+resolver: nightly-2018-04-21
 
 # User packages to be built.
 # Various formats can be used as shown in the example below.
@@ -41,7 +41,7 @@ packages:
 # (e.g., acme-missiles-0.3)
 extra-deps:
   - git: https://github.com/truls/language-vhdl-quote
-    commit: 9d34b273f8c09c5d8c87ec52175c53710ffa7862
+    commit: 9006aee774e1262a87e472783d74f140711244d8
   - mainland-pretty-0.7
   - srcloc-0.5.1.2
 

@@ -1,4 +1,4 @@
---{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Stage manager module. Manages the compilation process and
@@ -6,87 +6,93 @@
 module SME.Stages
   ( Stages(..)
   , Config(..)
- -- , CompilerM (..)
   , compile
   , mkConfig
+  , cmdLineOptParser
+  , libOptParser
   ) where
 
 import           Control.Exception     (throw, tryJust)
 import           Control.Monad         (when)
-import           Data.Char             (isLetter, toLower)
+import           Data.List             (intercalate, nub)
+import           Data.Maybe            (fromJust, isJust)
 import qualified Data.Text.IO          as TIO
---import           Text.Show.Pretty      (ppShow)
+import           Options.Applicative
+import           Text.Show.Pretty      (ppShow)
 
 import           Language.SMEIL.Pretty
 import           SME.CodeGen
 import           SME.Error
 import           SME.ImportResolver
+import           SME.Reconstruct
+import           SME.Representation
 import           SME.Simulate
 import           SME.TypeCheck
 
-data Stages
-  = ResolveImport
-  | Rename
-  | TypeCheck
-  | Optimize
-  | CodeGen
-  deriving (Eq, Show)
+cmdLineOptParser :: Parser Config
+cmdLineOptParser =
+  optParser $
+  strOption
+    (long "input" <> metavar "IN" <> short 'i' <>
+     help "Input file. Specify - for stdin.")
 
-data Config = Config
-  { inputFile        :: FilePath
-  , outputDir        :: FilePath
-  , dumpStages       :: [Stages] -- ^ Show the output of these stages
-  , force            :: Bool -- ^ Overwrite files in preexisting directories
-  , strictSizeBounds :: Bool -- ^ Should size bounds in input language be
-                        -- strictly enforced
-  , inferSizeBounds  :: Bool -- ^ Infer and adjust type bounds during type
-                            -- checking
-  , emulateOverflows :: Bool
-  , warnings         :: Bool -- ^ Are warnings enabled
-  , params           :: [String] -- [(String, [(String, String)])]
-  -- ^ Entity parameters supplied as command line options.
-  }
+libOptParser :: Parser Config
+libOptParser =
+  optParser $
+  strOption
+    (long "input" <> metavar "IN" <> short 'i' <>
+     help "Input file. Specify - for stdin." <>
+     value "")
 
-mkConfig :: Config
-mkConfig =
-  Config
-  { inputFile = ""
-  , outputDir = ""
-  , dumpStages = []
-  , force = False
-  , strictSizeBounds = False
-  , inferSizeBounds = False
-  , emulateOverflows = False
-  , warnings = False
-  , params = []
-  }
+optParser :: Parser String -> Parser Config
+optParser p =
+  Config <$> p <*>
+  optional
+    (strOption
+       (long "output" <> metavar "OUT" <> short 'o' <>
+        help
+          "If VHDL code generation is desired, set this option to the directory where output is wanted. Defaults to no-output")) <*>
+  (nub <$>
+   many
+     (option
+        auto
+        (long "dump-stage" <>
+         help
+           ("For debugging. Dumps the state of the compiler resulting from stage. Can be specified multiple times with one of the following arguments " ++
+            stagesPP)))) <*>
+  switch
+    (long "force" <> short 'f' <>
+     help "Allow existing output directories and overwrite files") <*>
+  switch
+    (long "strict-size-bounds" <> help "Strictly enforce size bounds of types") <*>
+  switch
+    (long "infer-size-bounds" <>
+     help "Adjust size bounds in code to inferred values") <*>
+  switch
+    (long "emulate-overflows" <>
+     help
+       "Strictly enforce the bit width of types during simulation by truncating overflowing numbers to their least significant bits. Default behavior is to simply warn about the overflow.") <*>
+  optional
+    (option
+       auto
+       (long "simulate" <> short 's' <>
+        help "Run simulation for the given number of iterations")) <*>
+  optional
+    (strOption
+       (long "trace" <> short 't' <> help "Where to write the trace file")) <*>
+  switch (long "no-warnings" <> short 'w' <> help "Disable warnings") <*>
+  many
+    (strOption
+       (long "param" <> short 'p' <>
+        help
+          "Set a network entity parameter. Repeat this option once per parameter. ARG has the format <entity-name>:<param-name>=<value> (no spaces). Parameters in the code will override parameters set here."))
+  where
+    stagesPP =
+      intercalate ", " (map show [ResolveImport, TypeCheck, CodeGen]) ++
+      " or " ++ show Retyped
 
 dumpStage :: Config -> Stages -> Bool
 dumpStage c s = s `elem` dumpStages c
-
--- data CompilerState = CompilerState
---   { config    :: Config -- ^ The global compilation pipeline configuration
---   , renamings :: RenameState
---   }
-
--- newtype CompilerM a = CompilerM
---   { unGlobalM :: Reader CompilerState a
---   } deriving (Functor, Applicative, Monad, MonadReader CompilerState)
-
-instance Read Stages where
-  readsPrec _ input =
-    let (tok, rest) = span (\l -> isLetter l || l == '-') input
-    in case mapFormat tok of
-         Just f  -> [(f, rest)]
-         Nothing -> []
-    where
-      mapFormat =
-        (`lookup` [ ("resolve-imports", ResolveImport)
-                  , ("type-check", TypeCheck)
-                  , ("optimize", Optimize)
-                  , ("code-generation", CodeGen)
-                  ]) .
-        map toLower
 
 compile :: Config -> IO ()
 compile conf = do
@@ -95,10 +101,30 @@ compile conf = do
   res <-
     tryJust
       (\(e :: TypeCheckErrors) -> Just (renderError nameMap e))
-      (typeCheck df)
-  tyEnv <- case res of
-            Left e  -> throw $ CompilerError e
-            Right r -> pure r
-  simulate 10 tyEnv
-  --when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
-  genOutput (outputDir conf) VHDL tyEnv
+      (typeCheck df conf)
+  tyEnv <-
+    case res of
+      Left e  -> throw $ CompilerError e
+      Right r -> pure r
+  when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
+  genIn <-
+    case runSim conf of
+      Just its ->
+        simulate its tyEnv >>= \case
+          Left e -> do
+            putStrLn $ renderError nameMap e
+            throw e
+          Right r -> return (Void <$ r)
+      Nothing -> return tyEnv
+  let recon = reconstruct genIn
+  when (dumpStage conf Retyped) (TIO.putStrLn $ pprr recon)
+  res' <-
+    tryJust
+      (\(e :: TypeCheckErrors) -> Just (renderError nameMap e))
+      (typeCheck recon conf)
+  tyEnv' <-
+    case res' of
+      Left e  -> throw $ CompilerError e
+      Right r -> pure r
+  when (isJust (outputDir conf)) $
+    genOutput (fromJust (outputDir conf)) VHDL tyEnv'

@@ -366,7 +366,7 @@ instance Located Statement where
 data Enumeration = Enumeration
   { ty     :: Typeness
   , name   :: Ident
-  , fields :: [(Ident, Maybe Expr)]
+  , fields :: N.NonEmpty (Ident, Maybe Expr)
   , loc    :: SrcLoc
   } deriving (Eq, Ord, Show, Data, Typeable)
 
@@ -410,6 +410,9 @@ data Expr
             , name   :: Name
             , params :: [Expr]
             , loc    :: SrcLoc }
+  | Parens { ty   :: Typeness
+           , expr :: Expr
+           , loc  :: SrcLoc }
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance {-# OVERLAPPING #-} Typed Expr where
@@ -418,6 +421,7 @@ instance {-# OVERLAPPING #-} Typed Expr where
   typeOf PrimLit {..}  = ty
   typeOf PrimName {..} = ty
   typeOf FunCall {..}  = ty
+  typeOf Parens {..}   = ty
 
 instance Located Expr where
   locOf Binary {..}   = locOf loc
@@ -425,6 +429,7 @@ instance Located Expr where
   locOf PrimLit {..}  = locOf loc
   locOf PrimName {..} = locOf loc
   locOf FunCall {..}  = locOf loc
+  locOf Parens {..}   = locOf loc
 
 data BinOp
   =
@@ -476,14 +481,13 @@ data UnOp
   | UnMinus { loc :: SrcLoc }
   | NotOp { loc :: SrcLoc }
   | NegOp { loc :: SrcLoc }
-
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance Located UnOp where
-  locOf UnPlus  {..} = locOf loc
+  locOf UnPlus {..}  = locOf loc
   locOf UnMinus {..} = locOf loc
-  locOf NotOp   {..} = locOf loc
-  locOf NegOp   {..} = locOf loc
+  locOf NotOp {..}   = locOf loc
+  locOf NegOp {..}   = locOf loc
 
 data Name
   = Name { parts :: N.NonEmpty NamePart
@@ -531,13 +535,23 @@ data Type
   | Array { arrLength :: Maybe Expr
           , innerTy   :: Type
           , loc       :: SrcLoc }
-  deriving (Eq, Ord, Show, Data, Typeable)
+  deriving (Ord, Show, Data, Typeable)
 
 instance Typed Type where
   typeOf = Typed
 
--- instance Ord Type where
---   compare
+instance Eq Type where
+  Single {} == Single {} = True
+  Double {} == Double {} = True
+  Bool {} == Bool {} = True
+  String {} == String {} = True
+  Signed {size = size1} == Signed {size = size2} = size1 == size2
+  Unsigned {size = size1} == Unsigned {size = size2} = size1 == size2
+  Array {arrLength = al1, innerTy = ty1} == Array { arrLength = al2
+                                                  , innerTy = ty2
+                                                  } =
+    (al1 == al2) && (ty1 == ty2)
+  _ == _ = False
 
 instance Located Type where
   locOf Signed {..}   = locOf loc

@@ -8,28 +8,31 @@
 
 module SME.CodeGen.VHDL (genVHDL) where
 
-import           Control.Arrow           (first, (***))
-import           Control.Exception       (throw)
-import           Control.Monad           (forM, mapM)
-import           Data.List               (intercalate, partition, sortOn)
-import qualified Data.List.NonEmpty      as N
-import           Data.Maybe              (catMaybes, mapMaybe)
-import qualified Data.Set                as S
-import           Data.String             (fromString)
-import           Data.Text.Lazy          (toStrict)
+import           Control.Arrow               (first, (***))
+import           Control.Exception           (throw)
+import           Control.Monad               (forM, mapM)
+import           Control.Monad.State         (gets)
+import           Data.List                   (intercalate, nub, partition,
+                                              sortOn)
+import qualified Data.List.NonEmpty          as N
+import           Data.Maybe                  (catMaybes, mapMaybe)
+import qualified Data.Set                    as S
+import           Data.String                 (fromString)
+import           Data.Text.Lazy              (toStrict)
 
-import           Control.Monad.Extra     (concatForM, concatMapM)
-import qualified Data.HashMap.Strict     as M
-import           Data.Loc                (noLoc)
-import           Data.Makefile           (AssignmentType (SimpleAssign),
-                                          Command (..),
-                                          Entry (Assignment, OtherLine, Rule),
-                                          Makefile (..), Target (Target))
-import           Data.Makefile.Render    (encodeMakefile)
-import           Data.String.Interpolate (i)
-import qualified Language.VHDL           as V
-import           Language.VHDL.Quote     as Q
-import           System.FilePath         ((</>))
+import           Control.Monad.Extra         (concatForM, concatMapM)
+import           Data.Generics.Uniplate.Data (universeBi)
+import qualified Data.HashMap.Strict         as M
+import           Data.Loc                    (noLoc)
+import           Data.Makefile               (AssignmentType (SimpleAssign),
+                                              Command (..),
+                                              Entry (Assignment, OtherLine, Rule),
+                                              Makefile (..), Target (Target))
+import           Data.Makefile.Render        (encodeMakefile)
+import           Data.String.Interpolate     (i)
+import qualified Language.VHDL               as V
+import           Language.VHDL.Quote         as Q
+import           System.FilePath             ((</>))
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
@@ -38,7 +41,7 @@ import           SME.CodeGen.TH
 import           SME.Error
 import           SME.Representation
 
-import           Debug.Trace             (trace)
+import           Debug.Trace                 (trace)
 
 -- | Read the CSV parsing library
 csvUtil :: V.DesignFile
@@ -58,6 +61,12 @@ genType (Typed (Unsigned (Just s) _)) =
   [subtyind|unsigned($lit:(s-1) downto 0)|]
 genType (Typed (Signed Nothing _)) = [subtyind|integer|]
 genType (Typed (Signed (Just s) _)) = [subtyind|signed($lit:(s-1) downto 0)|]
+genType (Typed Array {..}) =
+  let it = pprr (Typed innerTy)
+      len = pprr arrLength
+      end = "\\" :: String
+      ty = [i|\\[#{len}]#{it}#{end}|]
+  in [subtyind|$ident:ty|]
 genType t@(Typed _) = genBuiltinType t
 genType Untyped = [subtyind|untyped|]
 
@@ -69,19 +78,23 @@ genBuiltinType (Typed Bool {})     = [subtyind|boolean|]
 genBuiltinType _                   = [subtyind|untyped|]
 
 genName :: Name -> GenM V.Name
-genName Name {..} =
-  let n =
-        intercalate "_" $
-        map (\IdentName {ident = i'} -> (toString i')) (N.toList parts)
-  in return [Q.name|$ident:n|]
+genName Name {..}
+  -- TODO: Find a nicer way of generating names. Maybe we have to build the VHDL
+  -- AST directly
+ = do
+  n <- intercalate "_" <$> mapM genNamePart (N.toList parts)
+  return [Q.name|$ident:n|]
 
--- genIdent :: Name -> GenM V.Identifier
--- genIdent Name {..} =
---   let n =
---         intercalate "_" $
---         map (\IdentName {ident = i} -> (toString i)) (N.toList parts)
---   in return [Q.ident|$ident:n|]
+genNamePart :: NamePart -> GenM String
+genNamePart IdentName {ident = i'} = pure (toString i')
+genNamePart ArrayAccess {namePart = np, index = index} = do
+  idx <- genArrayIdx index
+  p <- genNamePart np
+  return $ [i|#{V.pprr p}(to_integer(#{V.pprr idx}))|]
 
+genArrayIdx :: ArrayIndex -> GenM V.Expression
+genArrayIdx (Index e) = genExpr e
+genArrayIdx Wildcard  = pure [expr|0|] -- FIXME: Change array index rep
 
 -- | Generate VHDL code for a literal
 genLit :: Literal -> GenM V.Expression
@@ -209,7 +222,7 @@ genStm Switch {..} = do
         s' <- mapM genStm s
         return [[casealt|when others => $seqstms:(s')|]]
       Nothing -> return []
-  return [seqstm|case $expr:val is $casealts:(c' ++ dc) end case;|]
+  return [seqstm|case to_integer($expr:val) is $casealts:(c' ++ dc) end case;|]
 genStm For {var = var, body = body, from = from, to = to} = do
   body' <- mapM genStm body
   from' <- genExpr from
@@ -302,14 +315,33 @@ genPorts pt@ProcessTable {..} =
 genPorts NetworkTable {} =
   return ([], [])
 
-
+-- | Return an expression setting the default value for a type
 genDefaultExpr :: Maybe Literal -> Typeness -> GenM V.Expression
 genDefaultExpr sigVal ty =
   case sigVal of
     Just e -> withType genLit e
-    Nothing -> do
-      dl <- genDefaultLit ty
-      withType' ty (genLit dl)
+    Nothing ->
+      case ty of
+        Typed Array {..} -> do
+          dl <- genDefaultLit (Typed innerTy)
+          l <- withType' (Typed innerTy) (genLit dl)
+          return [expr|(others => $expr:l)|]
+        _ -> do
+          dl <- genDefaultLit ty
+          withType' ty (genLit dl)
+
+genDefaultLit :: Typeness -> GenM Literal
+genDefaultLit Untyped = throw $ InternalCompilerError "Untyped value in gen"
+genDefaultLit (Typed t) = go t
+  where
+    go Signed {}   = return $ LitInt 0 noLoc
+    go Unsigned {} = return $ LitInt 0 noLoc
+    go Bool {}     = return $ LitFalse noLoc
+    -- FIXME: This should depend on the length of the array type
+    go Array {}    = return $ LitArray [0] noLoc
+    go Single {}   = return $ LitFloat 0 noLoc
+    go Double {}   = return $ LitFloat 0 noLoc
+    go String {}   = return $ LitString "" noLoc
 
 genImageFun :: String -> Typeness -> V.Expression
 genImageFun n (Typed (Signed _ _))   = [expr|int_image($ident:n)|]
@@ -351,7 +383,8 @@ genTB entName (ins, outs) =
       outTmpVals = map (first (\x -> [i|#{x}_val|])) outs
       tmpVals = sortOn fst $ inTmpVals ++ outTmpVals
 
-      ports = trace ("Ins " ++ show ins ++ " Outs " ++ show outs) sortOn fst $ ins ++ outs
+      ports = trace ("Ins " ++ show ins ++ " Outs " ++ show outs)
+              sortOn fst $ ins ++ outs
       readVarDecls = map (uncurry genReadValDecls) tmpVals
       signals = map (\(n, t) -> [blockdecl|signal $ident:n:
                                           $subtyind:(genType t);|]) ports
@@ -507,19 +540,6 @@ genEntDec d ports = do
                        rst: in std_logic);
                        end $ident:n;|]
 
-genDefaultLit :: Typeness -> GenM Literal
-genDefaultLit Untyped = throw $ InternalCompilerError "Untyped value in gen"
-genDefaultLit (Typed t) = go t
-  where
-    go Signed {}   = return $ LitInt 0 noLoc
-    go Unsigned {} = return $ LitInt 0 noLoc
-    go Bool {}     = return $ LitFalse noLoc
-    -- FIXME: This should depend on the length of the array type
-    go Array {}    = return $ LitArray [0] noLoc
-    go Single {}   = return $ LitFloat 0 noLoc
-    go Double {}   = return $ LitFloat 0 noLoc
-    go String {}   = return $ LitString "" noLoc
-
 -- | Generate variable declarations and reset statements
 genVarDecls ::
      [DefType] -> GenM ([V.ProcessDeclarativeItem], [V.SequentialStatement])
@@ -529,12 +549,7 @@ genVarDecls dts =
     dts
     (\case
        VarDef {..} -> do
-         dv <-
-           case varVal of
-             Just e -> withType' (typeOf varDef) $ genLit e
-             Nothing -> do
-               dl <- genDefaultLit (typeOf varDef)
-               withType' (typeOf varDef) (genLit dl)
+         dv <- genDefaultExpr varVal (typeOf varDef)
          return $
            Just
              ( [procdecl|variable $ident:(toString varName) :
@@ -550,12 +565,12 @@ genConstDecls dts =
     dts
     (\case
        ConstDef {..} -> do
-         litVal <- withType' (typeOf constDef) (genLit constVal)
+         litVal <- withType' Untyped (genLit constVal)
          return $
            Just
              [procdecl|constant $ident:(toString constName) :
-                    $subtyind:(genType (typeOf constDef)) :=
-                    $expr:litVal;|]
+                      $subtyind:(genBuiltinType (typeOf constDef)) :=
+                      $expr:litVal;|]
        _ -> return Nothing)
 
 
@@ -618,8 +633,6 @@ genGenericMap topDef Instance {params = instPars} = do
 -- For buses that are not exposed, we simply use signals for the
 -- interconnect. For exposed buses, create an appropriate in/out port in the
 -- entity and connect to that.
-
---genAssocList ::
 
 -- | Gathers all buses used by instantiated processes. If they are exposed, we
 -- generate the corresponding signals and otherwise we genearte the appropriate
@@ -735,7 +748,7 @@ genTopDef p@ProcessTable {..} = do
   let contents =
         [designfile|$contextitems:ctx
                    library work;
-                   -- use work.sme_types.all;
+                   use work.sme_types.all;
                    $libraryunit:ent
                    architecture rtl of $ident:n is
                    begin
@@ -756,6 +769,8 @@ genTopDef p@ProcessTable {..} = do
         OutputFile
         {destFile = n, fileExt = ".vhdl", content = V.pprrText contents}
     ]
+
+
 genTopDef nt@NetworkTable {..}
   -- We use the following naming scheme for signals used for interconnects:
   -- Signals of busses declared with a named instance are named
@@ -801,6 +816,34 @@ genTopDef nt@NetworkTable {..}
     tb
 
 
+-- | Generates a file containing array definitions
+genTypeDefs :: GenM TaggedFile
+genTypeDefs = do
+  ds <- M.elems <$> gets defs
+  let types = nub $ universeBi ds :: [Type]
+  res <- catMaybes <$> mapM (\case
+               Array {..} -> do
+                 let it = pprr (Typed innerTy)
+                     len = pprr arrLength
+                     ai = [i|\\[#{len}]#{it}\\|]
+                 ex <- case arrLength of
+                   Just l  -> genExpr l
+                   -- TODO: Change the internal type representation such that
+                   -- this isn't needed
+                   Nothing -> pure [expr|0|]
+                 return $ Just $ [packdeclit|type $ident:ai is array
+                                            (0 to $expr:ex) of
+                                            $subtyind:(genType (Typed innerTy));|]
+               _ -> pure Nothing
+           ) types
+  let contents = [designfile|library ieee;
+use ieee.numeric_std.all;
+
+package sme_types is
+$packdeclits:res
+end package;|]
+  return $ Regular OutputFile {destFile = "sme_types", fileExt = ".vhdl", content = V.pprrText contents}
+
 genMakefile :: [TaggedFile] -> OutputPlan
 genMakefile tfs =
   let (os, ms) = unzip $ map go tfs
@@ -809,7 +852,7 @@ genMakefile tfs =
         [ OtherLine "# Makefile genearted by libSME"
         , OtherLine ""
         , Assignment SimpleAssign "WORKDIR" "work"
-        , Assignment SimpleAssign "IEEE" "synopsys"
+        , Assignment SimpleAssign "STD" "08"
         , Assignment SimpleAssign "VCDFILE" "trace.vcd"
         , OtherLine ""
         , OtherLine ""
@@ -831,7 +874,7 @@ genMakefile tfs =
              []
              [ Command $
                fromString
-                 [i|ghdl -a --std=$(STD) --ieee=$(IEEE) --workdir=$(WORKDIR) #{fileName f}|]
+                 [i|ghdl -a --std=$(STD) --workdir=$(WORKDIR) #{fileName f}|]
              ]))
     go (TestBench f@OutputFile {}) = (f, Nothing)
 
@@ -840,18 +883,14 @@ data TaggedFile
   = Regular OutputFile
   | TestBench OutputFile
 
-
-
--- data FileType
---   = Regular
---   | TestBench
-
 genVHDL :: GenM OutputPlan
-genVHDL =
+genVHDL = do
+  td <- genTypeDefs
   genMakefile .
-  ([ Regular
-       OutputFile
-       {destFile = "csv_util", fileExt = "vhdl", content = V.pprrText csvUtil}
-   ] ++) .
-  concat <$>
-  mapUsedTopDefsM (\x -> withScope (nameOf x) (genTopDef x))
+    ([ Regular
+         OutputFile
+         {destFile = "csv_util", fileExt = "vhdl", content = V.pprrText csvUtil}
+     , td
+     ] ++) .
+    concat <$>
+    mapUsedTopDefsM (\x -> withScope (nameOf x) (genTopDef x))

@@ -160,11 +160,13 @@ instance Pretty Statement where
   ppr (Break _) = text "break" <> semi
   ppr (Return v _) = text "return" <+> ppr v <> semi
   ppr (Trace s p _) =
-    text "print" <> parens (ppr s <> comma <+> commasep (map ppr p)) <> semi
+    text "trace" <> parens (ppr s <> comma <+> commasep (map ppr p)) <> semi
 
 instance Pretty Enumeration where
   ppr (Enumeration _ n fs _) =
-    hang' (text "enum" <+> ppr n <+> lbrace </> commasep (map field fs)) </> rbrace
+    hang'
+      (text "enum" <+> ppr n <+> lbrace </> commasep (map field (toList fs))) </>
+    rbrace
     where
       field :: (Ident, Maybe Expr) -> Doc
       field (i, e) = ppr i <+> ppr (catL (text "=" <> space) e)
@@ -180,6 +182,7 @@ instance Pretty Expr where
   ppr (PrimLit _ l _)       = ppr l
   ppr (PrimName _ n _)      = ppr n
   ppr (FunCall _ n ps _)    = ppr n <> parens (commasep (map ppr ps))
+  ppr (Parens _ e _ )       = parens (ppr e)
 
 instance Pretty Instance where
   ppr (Instance n i e ps _) =

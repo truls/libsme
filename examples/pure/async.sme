@@ -1,0 +1,36 @@
+async proc odd(in value)
+    exposed bus odd_Out {
+        val: i32;
+    };
+{
+    odd_out.val = value.val;
+}
+
+async proc even(in value)
+    exposed bus even_out {
+        val: i32;
+    }
+{
+    even_out.val = value.val;
+}
+
+sync proc producer ()
+    var val: i32 = 0;
+    prod_val {
+        val: i32;
+    };
+{
+    if (val % 2 == 0) {
+        even.val = val;
+    } else {
+        odd.val = val;
+    }
+
+    val = val + 1;
+}
+
+network evenodd() {
+    instance _ odd(prod.val);
+    instance _ even(prod.val);
+    instance prod of producer();
+}

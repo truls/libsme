@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes        #-}
+{-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE DuplicateRecordFields      #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -7,8 +8,8 @@
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
 
--- | Internal representation of an SMEIL program and functions for manipulating
--- it.
+-- | Internal representation of an SMEIL program with related core datas
+-- tructures and functions for manipulating them.
 
 module SME.Representation
   ( ReprM
@@ -23,14 +24,13 @@ module SME.Representation
   , Void(..)
   , Extension(..)
   , BusVisibility(..)
-  , Value (..)
+  , Value(..)
   , BaseSymTab
   , ParamList
   , UsedBuses
   , ensureUndef
   , mkEnv
   , runReprM
-  , runReprStM
   , runReprMidentity
   , unReprM
   , isBus
@@ -40,6 +40,9 @@ module SME.Representation
   , setType
   , setBusChanType
   , lookupTy
+  , Config(..)
+  , Stages(..)
+  , mkConfig
   ) where
 
 import           Control.Exception      (throw)
@@ -49,9 +52,12 @@ import           Control.Monad.Identity (Identity, runIdentity)
 import           Control.Monad.IO.Class
 import           Control.Monad.State    (MonadState, StateT, gets, modify,
                                          runStateT)
-import qualified Data.HashMap.Strict    as M
+import           Data.Char              (isLetter, toLower)
+import           Data.Data              (Data)
 import           Data.List.NonEmpty     (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty     as N
+
+import qualified Data.HashMap.Strict    as M
 import           Data.Loc               (Located, locOf, noLoc)
 import qualified Data.Set               as S
 import           Data.Vector            (Vector)
@@ -85,10 +91,6 @@ runReprMidentity e f = runIdentity $ runStateT (runExceptT $ unReprM f) e
 
 runReprM :: BaseEnv s -> ReprM m s a -> m (Either TypeCheckErrors a, BaseEnv s)
 runReprM e f = runStateT (runExceptT $ unReprM f) e
-
-runReprStM ::
-     BaseEnv s -> ReprM (m st) s a -> m st (Either TypeCheckErrors a, BaseEnv s)
-runReprStM e f = runStateT (runExceptT $ unReprM f) e
 
 -- | Type checking monad
 class ( Monad m
@@ -241,6 +243,7 @@ class ( Monad m
          --withScope x $ f def
          f def)
       (S.toList u)
+
   addDefinition ::
        (References a, Located a, Pretty a, ToString a)
     => a
@@ -249,6 +252,7 @@ class ( Monad m
   addDefinition k v = do
     cur <- gets curEnv
     addDefinition' cur k v
+
   addDefinition' ::
        (References a, Located a, Pretty a, Located b, ToString b)
     => a
@@ -261,6 +265,7 @@ class ( Monad m
       ensureUndef k (symTable def) $
       pure $ M.insert (toString k) v (symTable def)
     updateTopDef topDef (\x -> x {symTable = symTab})
+
   -- | Executes action act with a fresh environment
   withLocalEnv :: m a -> m a
   withLocalEnv act = do
@@ -269,9 +274,11 @@ class ( Monad m
     res <- act
     updateCurEnv (\x -> x {symTable = symTab})
     return res
+
   addUsedEnt :: (Nameable a) => a -> m ()
   addUsedEnt e = modify (\x -> x {used = S.insert (nameOf e) (used x)})
   --setUsedBus :: Ref -> (Maybe Ident, BusState) -> m ()
+
   setUsedBus :: Ref -> (Ref, BusState) -> m ()
   setUsedBus r s = do
     cur <- gets curEnv
@@ -282,6 +289,7 @@ class ( Monad m
          p@ProcessTable {usedBuses = usedBuses} ->
            p {usedBuses = M.insertWith S.union r (S.singleton s) usedBuses}
          other -> other)
+
   getBusState :: Ref -> m (Maybe [(Ref, BusState)])
   getBusState r =
     M.lookup r . usedBuses <$> getCurEnv >>= \case
@@ -291,26 +299,31 @@ class ( Monad m
   -- addUsedBus r = do
   --   cur <- gets curBaseEnv
   --   modify (\x -> x {1
+
   withScope :: (References a, Pretty a, Located a) => a -> m b -> m b
   withScope s act = do
     cur <- gets curEnv
     new <- lookupTopDef s
     modify (\x -> x {curEnv = nameOf new})
     act <* modify (\x -> x {curEnv = cur})
+
   getCurEnv :: (MonadRepr a m) => m (BaseTopDef a)
   getCurEnv = do
     e <- gets curEnv
     traceM ("getCurEnv " ++ show e)
     lookupTopDef e
+
   updateCurEnv :: (MonadRepr a m) => (BaseTopDef a -> BaseTopDef a) -> m ()
   updateCurEnv f = do
     e <- gets curEnv
     updateTopDef e f
+
   addTopDef :: BaseTopDef s -> m ()
   addTopDef d = do
     ds <- gets defs
     let n = toString $ nameOf d
     ensureUndef (nameOf d) ds $ modify (\s -> s {defs = M.insert n d (defs s)})
+
   updateDef ::
        (MonadRepr s m, Located a, References a, Pretty a)
     => a
@@ -324,6 +337,9 @@ class ( Monad m
     updateTopDef
       cur
       (\x -> x {symTable = M.insert (toString (nameOf def)) def' (symTable x)})
+
+  getConfig :: (MonadRepr s m) => (Config -> a) -> m a
+  getConfig f = f <$> gets config
 
 lookupEx ::
      (ToString a, Pretty a, Located a, MonadRepr s m)
@@ -361,7 +377,7 @@ instance Extension Void where
   emptyExt = Void
 
 data Void = Void
-  deriving Show
+  deriving (Show, Data)
 
 data Value
   = IntVal !Integer
@@ -439,12 +455,12 @@ data BaseDefType a
            , busShape  :: BusShape
            , busDef    :: Bus
            , busState  :: BusState
-           , shared    :: BusVisibility -- ^ Property indicating if a bus is used for
-                         -- communicating outside of an instance. Starts
-                         -- out as true. Flips to false if a bus is read
-                         -- from and written to in the same
-                         -- cycle. Accessing a bus with shared = false from
-                         -- outside the process where it is declared is an error
+           , shared    :: BusVisibility
+             -- ^ Property indicating if a bus is used for communicating outside
+             -- of an instance. Starts out as true. Flips to false if a bus is
+             -- read from and written to in the same cycle. Accessing a bus with
+             -- shared = false from outside the process where it is declared is
+             -- an error
            , isExposed :: Bool
            , ext       :: a }
   | FunDef { funcName :: Ident
@@ -467,10 +483,10 @@ data BaseDefType a
             , ext          :: a
               -- Also track: Parameters
              }
-   | ParamDef { paramName :: Ident
-             , paramType  :: ParamType
-             , ext        :: a }
-  deriving (Show)
+  | ParamDef { paramName :: Ident
+             , paramType :: ParamType
+             , ext       :: a }
+  deriving (Show, Data)
 
 isBus :: BaseDefType a -> Bool
 isBus BusDef {} = True
@@ -512,7 +528,7 @@ setBusChanType ident ty b@BusDef {busShape = shape} =
                else o)
           (unBusShape shape)
   in b {busShape = shape'}
-setBusChanType _ _ t = t
+setBusChanType _ _ t                                = t
 
 lookupTy ::
      (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
@@ -554,7 +570,7 @@ lookupTy r = do
 -- TODO: Maybe change this to a map
 newtype BusShape = BusShape
   { unBusShape :: [(Ident, (Typeness, Maybe Literal))]
-  } deriving (Eq, Show)
+  } deriving (Eq, Show, Data)
 
 --type BusShape = M.HashMap Ident (Typeness, Maybe Expr)
 
@@ -574,24 +590,24 @@ data ParamType
            , busShape :: BusShape
            , busState :: BusState
            , array    :: Maybe Integer}
-  deriving (Show, Eq)
+  deriving (Show, Eq, Data)
 
 data BusVisibility
   = Shared
   | Private
-  deriving (Show, Eq)
+  deriving (Show, Eq, Data)
 
 data BusState
   = Input
   | Output
   | Local
   | Unassigned
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Data)
 
 data VarState
   = Used
   | Unused
-  deriving (Eq, Show)
+  deriving (Eq, Show, Data)
 
 type BaseSymTab a = M.HashMap String (BaseDefType a)
 type ParamList = [(Ident, ParamType)]
@@ -620,7 +636,7 @@ data BaseTopDef a
                  , netDef   :: Network
                  , topLevel :: Bool
                  , ext      :: a }
-  deriving (Show)
+  deriving (Show, Data)
 
 instance Functor BaseTopDef where
   fmap f t@ProcessTable {..} =
@@ -638,7 +654,7 @@ instance Located (BaseTopDef a) where
 
 instance Functor BaseEnv where
   fmap f BaseEnv {..} =
-    BaseEnv ((f <$>) <$> defs) curEnv used (f ext)
+    BaseEnv ((f <$>) <$> defs) curEnv used config (f ext)
 
 -- | Top-level type checking environment
 data BaseEnv a = BaseEnv
@@ -646,8 +662,66 @@ data BaseEnv a = BaseEnv
   --, curEnv :: BaseTopDef a -- ^ Scope of currently used definition
   , curEnv :: Ident -- TODO: Probably change to Maybe Ref
   , used   :: S.Set Ident -- ^ Instantiated definitions
+  , config :: Config
   , ext    :: a
   } deriving (Show)
 
-mkEnv :: a -> BaseEnv a
+mkEnv :: Config -> a -> BaseEnv a
 mkEnv = BaseEnv M.empty (Ident "__noEnv__" noLoc) S.empty
+
+data Stages
+  = ResolveImport
+--  | Rename
+  | TypeCheck
+  | CodeGen
+  | Retyped
+  deriving (Eq, Show)
+
+instance Read Stages where
+  readsPrec _ input =
+    let (tok, rest) = span (\l -> isLetter l || l == '-') input
+    in case mapFormat tok of
+         Just f  -> [(f, rest)]
+         Nothing -> []
+    where
+      mapFormat =
+        (`lookup` [ ("resolve-imports", ResolveImport)
+                  , ("type-check", TypeCheck)
+                  --, ("optimize", Optimize)
+                  , ("code-generation", CodeGen)
+                  , ("typed", Retyped)
+                  ]) .
+        map toLower
+
+data Config = Config
+  { inputFile        :: FilePath
+  , outputDir        :: Maybe FilePath
+  , dumpStages       :: [Stages] -- ^ Show the output of these stages
+  , force            :: Bool -- ^ Overwrite files in preexisting directories
+  , strictSizeBounds :: Bool -- ^ Should size bounds in input language be
+                        -- strictly enforced
+  , inferSizeBounds  :: Bool -- ^ Infer and adjust type bounds during type
+                            -- checking
+  , emulateOverflows :: Bool
+  , runSim           :: Maybe Int
+  , traceFile        :: Maybe FilePath
+  , warnings         :: Bool -- ^ Are warnings enabled
+  , params           :: [String] -- [(String, [(String, String)])]
+  -- ^ Entity parameters supplied as command line options.
+  } deriving (Show)
+
+mkConfig :: Config
+mkConfig =
+  Config
+  { inputFile = ""
+  , outputDir = Nothing
+  , dumpStages = []
+  , force = False
+  , strictSizeBounds = False
+  , inferSizeBounds = False
+  , emulateOverflows = False
+  , runSim = Nothing
+  , traceFile = Nothing
+  , warnings = False
+  , params = []
+  }

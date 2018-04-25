@@ -99,7 +99,8 @@ enum :: Parser S.Enumeration
 enum =
   withPos $
   reserved "enum" >>
-  S.Enumeration S.Untyped <$> ident <*> braces (enumField `sepBy1` comma) <*
+  S.Enumeration S.Untyped <$> ident <*>
+  braces (fromList <$> enumField `sepBy1` comma) <*
   semi
   where
     enumField = (,) <$> ident <*> optional (symbol "=" *> expression)
@@ -186,7 +187,8 @@ declaration =
 statement :: Parser S.Statement
 statement =
   withPos
-    (ifStm <|> forStm <|> switchStm <|> barrierStm <|> breakStm <|> returnStm <|>
+    (ifStm <|> forStm <|> switchStm <|> barrierStm <|> breakStm <|> traceStm <|>
+     returnStm <|>
      assignStm <?> "statement")
   where
     assignStm = S.Assign <$> (name <* equal) <*> expression <* semi
@@ -204,7 +206,7 @@ statement =
       braces (many statement) <?> "for statement"
     switchStm =
       reserved "switch" >>
-      S.Switch <$> (expression <* reserved "where") <*>
+      S.Switch <$> expression <*>
       (symbol "{" *> many switchCase) <*>
       (optional defaultCase <* symbol "}") <?> "switch statement"
       where
@@ -212,6 +214,13 @@ statement =
           reserved "case" >>
           (,) <$> expression <*> braces (some statement) <?> "switch case"
         defaultCase = reserved "default" *> braces (some statement)
+    traceStm =
+      reserved "trace" >>
+      (parens
+        -- TODO: Make the stringLit parser return a Literal type
+         (S.Trace <$> (withPos (S.LitString <$> stringLit) <* comma) <*>
+          (expression `sepBy` comma)) <*
+       semi)
     barrierStm = reserved "barrier" >> semi >> pure S.Barrier
     breakStm = reserved "break" >> semi >> pure S.Break
     returnStm = reserved "return" >> S.Return <$> optional expression <* semi
@@ -237,10 +246,13 @@ arrayIndex = (symbol "*" >> pure S.Wildcard) <|> S.Index <$> expression
 expression :: Parser S.Expr
 expression = makeExprParser term table <?> "expression"
 
+parensExpr :: Parser S.Expr
+parensExpr = withPos (S.Parens S.Untyped <$> expression)
+
 term :: Parser S.Expr
 term =
   choice
-    [ parens expression
+    [ parens parensExpr
     , withPos $ S.PrimLit S.Untyped <$> (literal <|> withPos arrayLit)
     , try (withPos funCall)
     , withPos $ S.PrimName S.Untyped <$> name
