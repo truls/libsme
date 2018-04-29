@@ -487,42 +487,47 @@ mkBusInst :: Bool -> Ident -> BusShape -> Ref -> SimM BusInst
 mkBusInst exposed n bs busRef = do
   chans <-
     puppetMode <$> gets (ext :: SimEnv -> SimExt) >>= \case
-      Just ptr ->
-        liftIO $ do
-          busPtr <- mkExtBus ptr (toString n) -- liftIO $ apiCallWrap $ busFun (toString n)
-          toExtChans exposed busPtr bs
-      Nothing -> liftIO $ toBusChans bs
+      Just ptr -> do
+        busPtr <- liftIO $ mkExtBus ptr (toString n)
+        toExtChans exposed busPtr bs
+      Nothing -> toBusChans bs
   let res = BusInst (MM.fromList (sortOn fst chans)) n busRef [] []
   addBusInst res
   return res
   where
-    toExtChans :: Bool -> BusPtr -> BusShape -> IO [(Ident, BusChan)]
+    toExtChans :: Bool -> BusPtr -> BusShape -> SimM [(Ident, BusChan)]
     toExtChans isPuppet bptr bs' =
       forM
         (unBusShape bs')
         (\case
-           (i, (Typed ty, lit)) ->
-             let defVal = fromMaybe (toValue (0 :: Integer)) (toValue <$> lit)
-             in (i, ) <$>
-                if isPuppet
-                  then do
-                    chan <- mkExtChan bptr (toString i) ty
-                    ExternalChan i <$> newIORef defVal <*> pure (writePtr chan)
-                                   <*> pure (readPtr chan)
-                  else LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
-                       newIORef defVal
+           (i, (oTy@(Typed ty), lit)) -> do
+             defVal <- genDefaultValue lit oTy
+             (i, ) <$>
+               if isPuppet
+                 then liftIO $ do
+                        chan <- mkExtChan bptr (toString i) ty
+                        ExternalChan i <$> newIORef defVal <*>
+                          pure (writePtr chan) <*>
+                          pure (readPtr chan)
+                 else liftIO $
+                      LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
+                      newIORef defVal
            _ -> throw $ InternalCompilerError "Illegal bus chan")
-    toBusChans :: BusShape -> IO [(Ident, BusChan)]
+    toBusChans :: BusShape -> SimM [(Ident, BusChan)]
     toBusChans bs' =
       mapM
-        (\(i, (_ty, lit)) -- TODO: make this type safe
-          ->
-           let defVal = fromMaybe (toValue (0 :: Integer)) (toValue <$> lit)
-           in (i, ) <$>
-              (LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
-               newIORef defVal))
+        (\(i, (ty, lit)) -> do
+           defVal <- genDefaultValue lit ty
+           (i, ) <$>
+             liftIO
+               (LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
+                newIORef defVal))
         (unBusShape bs')
 
+
+genDefaultValue :: Maybe Literal -> Typeness -> SimM Value
+genDefaultValue Nothing ty = mkInitialValue ty
+genDefaultValue (Just l) _ = return $ toValue l
 
 mkInitialValue :: Typeness -> SimM Value
 mkInitialValue Untyped = throw $ InternalCompilerError "Untyped value in sim"
