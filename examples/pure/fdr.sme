@@ -1,0 +1,28 @@
+proc gen(const gen_val)
+    bus genout {
+        val: int;
+    };
+{
+    genout.val = gen_val;
+}
+
+proc fun (in fun_in)
+    bus funout {
+        val: int;
+    };
+{
+    funout.val = fun_in.val + 10;
+}
+
+proc sink (in sink_in)
+{
+    assert (sink_in.val > 10);
+    trace ("Value was {}", sink_in.val);
+}
+
+network fdr ()
+{
+    instance g of gen(gen_val: 2);
+    instance f of fun(g.genout);
+    instance s of sink(f.funout);
+}
