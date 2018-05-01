@@ -54,6 +54,7 @@ import qualified Data.Text                         as T
 import qualified Data.Text.IO                      as T
 import           Data.Vector                       (fromList, (!), (//))
 
+import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
 import           SME.API.Internal
 import           SME.CsvWriter
@@ -274,7 +275,7 @@ evalStm Trace {..} =
     LitString {stringVal = stringVal} ->
       unlessM (getConfig quiet) $ do
         let s = T.splitOn "{}" stringVal
-        vals <- map (T.pack . show) <$> mapM evalExpr subs
+        vals <- map pprr <$> mapM evalExpr subs
         let res = mconcat $ zipWith (<>) s vals
         liftIO $ T.putStrLn res
     _ -> throw $ InternalCompilerError "Not a string lit"

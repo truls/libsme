@@ -45,22 +45,27 @@ module SME.Representation
   , mkConfig
   ) where
 
-import           Control.Exception      (throw)
-import           Control.Monad          (void)
-import           Control.Monad.Except   (ExceptT, MonadError, runExceptT)
-import           Control.Monad.Identity (Identity, runIdentity)
+import           Control.Exception               (throw)
+import           Control.Monad                   (void, when)
+import           Control.Monad.Except            (ExceptT, MonadError,
+                                                  runExceptT)
+import           Control.Monad.Identity          (Identity, runIdentity)
 import           Control.Monad.IO.Class
-import           Control.Monad.State    (MonadState, StateT, gets, modify,
-                                         runStateT)
-import           Data.Char              (isLetter, toLower)
-import           Data.Data              (Data)
-import           Data.List.NonEmpty     (NonEmpty ((:|)))
-import qualified Data.List.NonEmpty     as N
+import           Control.Monad.State             (MonadState, StateT, gets,
+                                                  modify, runStateT)
+import           Data.Char                       (isLetter, toLower)
+import           Data.Data                       (Data)
+import           Data.List.NonEmpty              (NonEmpty ((:|)))
+import qualified Data.List.NonEmpty              as N
+import           Data.Maybe                      (fromJust, isJust)
 
-import qualified Data.HashMap.Strict    as M
-import           Data.Loc               (Located, locOf, noLoc)
-import qualified Data.Set               as S
-import           Data.Vector            (Vector)
+import qualified Data.HashMap.Strict             as M
+import           Data.Loc                        (Located, locOf, noLoc)
+import qualified Data.Set                        as S
+import           Data.Vector                     (Vector)
+import qualified Data.Vector                     as V
+import           Text.PrettyPrint.Mainland.Class (Pretty (ppr))
+
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
@@ -416,6 +421,13 @@ instance Ord Value
   (SingleVal _) `compare` (DoubleVal _) = LT -- TODO
   (ArrayVal _ a) `compare` b = maximum a `compare` b
   a `compare` (ArrayVal _ b) = a `compare` maximum b
+
+instance Pretty Value where
+  ppr (IntVal i)     = ppr i
+  ppr (ArrayVal _ v) = ppr (V.toList v)
+  ppr (BoolVal b)    = ppr b
+  ppr (DoubleVal d)  = ppr d
+  ppr (SingleVal s)  = ppr s
 
 -- | For values that are instance of Num, runs abs on the value. Returns the
 -- identity otherwise
