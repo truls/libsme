@@ -2,20 +2,8 @@ proc plusone(in inbus, const val)
     exposed bus plusout {
        val: i32;
     };
-    const one: i3 = 10;
-    //var two: i32 = 0;
 {
-    if (inbus.valid) {
-        //two = two + val;
-        //plusout.val = two; //inbus.val + two;
-        if (one == 0) {
-            plusout.val = inbus.val + 1;
-        } elif (one == 1) {
-            plusout.val = inbus.val + 1;
-        } else {
-            plusout.val = inbus.val + 20;
-        }
-    }
+    plusout.val = inbus.val + 1;
 }
 
 network plusone_net() {
@@ -24,6 +12,6 @@ network plusone_net() {
         val: i32;
     };
 
-    const foo: i4 = 10;
-    instance plusone_inst of plusone(idout, 2);
+    instance plusone_inst of
+        plusone(idout);
 }

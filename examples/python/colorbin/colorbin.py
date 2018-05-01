@@ -60,7 +60,7 @@ class CollectResults(SimulationProcess):
             self.res.append((self.result["low"], self.result["med"],
                                 self.result["high"]))
 
-@extends("collector.sme", ["--trace", "trace.csv"])
+@extends("collector.sme", ["-f", "--trace", "trace.csv"])
 class ColorBin(Network):
     def wire(self, result):
         # print("Wire: ", args, kwargs)

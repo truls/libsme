@@ -1,5 +1,4 @@
-from sme import SME, Network, SimulationProcess, ExternalBus, extends
-
+from sme import *
 
 class Id(SimulationProcess):
     def setup(self, ins, outs, result):
@@ -12,15 +11,12 @@ class Id(SimulationProcess):
         self.out["val"] = self.inp["val"]
         self.out["valid"] = True
 
-
 @extends("addone.sme")
 class AddOne(Network):
     def wire(self, result):
         plus_out = ExternalBus("plusout")
         id_out = ExternalBus("idout")
-
         p = Id("Id", [plus_out], [id_out], result)
-
         self.add(plus_out)
         self.add(id_out)
         self.add(p)

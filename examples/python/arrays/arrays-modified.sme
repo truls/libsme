@@ -1,0 +1,39 @@
+network arrays_net ()
+{
+    exposed bus control {valid: bool;
+                         mode: u1;
+                         pos: u4;
+                         val: i7;};
+    instance fillRead of fillRead(control);
+}
+proc fillRead (in inbus)
+    var val: i8;
+    var arr: [10]i8;
+    const LOAD: u1 = 1;
+    const STORE: u1 = 0;
+    exposed bus arr_out {val: i8;
+                         valid: bool;};
+{
+    if (inbus.valid) {
+        switch (inbus.mode) {
+            case STORE {
+                val = inbus.val * 2;
+                arr[inbus.pos] = val;
+                trace("Stored {} to position {}", val, inbus.pos);
+                arr_out.valid = false;
+            }
+            case LOAD {
+                arr_out.val = arr[inbus.pos];
+                arr_out.valid = true;
+            }
+            default
+                {
+                arr_out.valid = false;
+            }
+        }
+    } else {
+         arr_out.valid = false;
+    }
+}
+
+

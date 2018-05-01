@@ -1,5 +1,4 @@
 proc collector (in image_input)
-
     exposed bus bin_count_out {
         valid: bool;
 
@@ -9,8 +8,8 @@ proc collector (in image_input)
     };
 
     // TODO: Test with thresholds given as parameters
-    const thresh_high: u32 = 200;
-    const thresh_med: u32 = 100;
+    const thresh_high: uint = 200;
+    const thresh_med: uint = 100;
 
     var countlow: u32;
     var countmed: u32;
@@ -35,14 +34,7 @@ proc collector (in image_input)
     bin_count_out.low = countlow;
     bin_count_out.med = countmed;
     bin_count_out.high = counthigh;
-    // FIXME: Should be possible without the if
     bin_count_out.valid = image_input.valid && image_input.last_pixel;
-    // if (image_input.valid && ) {
-    //     bin_count_out.valid = true;
-    //     countlow = 0;
-    //     countmed = 0;
-    //     counthigh = 0;
-    // }
 
 }
 
