@@ -106,6 +106,7 @@ direction =
 reservedWords :: [T.Text]
 reservedWords =
   [ "as"
+  , "assert"
   , "async"
   , "barrier"
   , "break"

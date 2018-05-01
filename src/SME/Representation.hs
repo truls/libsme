@@ -694,19 +694,19 @@ instance Read Stages where
         map toLower
 
 data Config = Config
-  { inputFile        :: FilePath
-  , outputDir        :: Maybe FilePath
-  , dumpStages       :: [Stages] -- ^ Show the output of these stages
-  , force            :: Bool -- ^ Overwrite files in preexisting directories
-  , strictSizeBounds :: Bool -- ^ Should size bounds in input language be
-                        -- strictly enforced
-  , inferSizeBounds  :: Bool -- ^ Infer and adjust type bounds during type
-                            -- checking
-  , emulateOverflows :: Bool
-  , runSim           :: Maybe Int
-  , traceFile        :: Maybe FilePath
-  , warnings         :: Bool -- ^ Are warnings enabled
-  , params           :: [String] -- [(String, [(String, String)])]
+  { inputFile          :: FilePath
+  , outputDir          :: Maybe FilePath
+  , dumpStages         :: [Stages] -- ^ Show the output of these stages
+  , force              :: Bool -- ^ Overwrite files in preexisting directories
+  , noStrictSizeBounds :: Bool -- ^ Assume all integers to be dynamically sized
+  --, inferSizeBounds    :: Bool -- ^ Adjust sizes according to
+  , quiet              :: Bool
+  , noAsserts          :: Bool
+  , emulateOverflows   :: Bool
+  , runSim             :: Maybe Int
+  , traceFile          :: Maybe FilePath
+  , warnings           :: Bool -- ^ Are warnings enabled
+  , params             :: [String] -- [(String, [(String, String)])]
   -- ^ Entity parameters supplied as command line options.
   } deriving (Show)
 
@@ -717,8 +717,10 @@ mkConfig =
   , outputDir = Nothing
   , dumpStages = []
   , force = False
-  , strictSizeBounds = False
-  , inferSizeBounds = False
+  , noStrictSizeBounds = False
+  --, inferSizeBounds = False
+  , quiet = False
+  , noAsserts = False
   , emulateOverflows = False
   , runSim = Nothing
   , traceFile = Nothing

@@ -64,10 +64,13 @@ optParser p =
     (long "force" <> short 'f' <>
      help "Allow existing output directories and overwrite files") <*>
   switch
-    (long "strict-size-bounds" <> help "Strictly enforce size bounds of types") <*>
-  switch
-    (long "infer-size-bounds" <>
-     help "Adjust size bounds in code to inferred values") <*>
+    (long "no-strict-size-bounds" <>
+     help "Interpret all sizes as if they were dynamically sized") <*>
+  -- switch
+  --   (long "adjust-size-bounds" <>
+  --    help "Adjust size bounds in code to inferred values") <*>
+  switch (long "quiet" <> short 'q' <> help "Suppress output from simulated programs") <*>
+  switch (long "quiet" <> short 'q' <> help "Suppress output from simulated programs") <*>
   switch
     (long "emulate-overflows" <>
      help

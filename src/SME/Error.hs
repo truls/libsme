@@ -68,6 +68,8 @@ data TypeCheckErrors where
   WroteInputBus :: (Located a, Pretty a) => a -> TypeCheckErrors
   ReadOutputBus :: (Located a, Pretty a) => a -> TypeCheckErrors
   NotAnArray :: (Located a, Pretty a) => a -> TypeCheckErrors
+  ArgumentError :: (Located a) => a -> String -> TypeCheckErrors
+  AssertionError :: (Located a, Pretty a) => a -> Maybe String -> TypeCheckErrors
   InternalCompilerError :: String -> TypeCheckErrors
   deriving (Exception)
 
@@ -151,6 +153,10 @@ instance Show TypeCheckErrors where
     pprrString def ++ " at " ++ displayLoc (locOf def)
   show (NotAnArray def) =
     pprrString def ++ " is not an array at " ++ displayLoc (locOf def)
+  show (ArgumentError def msg) = msg ++ " At: " ++ displayLoc' def
+  show (AssertionError expr str) =
+    let msg = fromMaybe (pprrString expr) str
+    in "Assertion " ++ msg ++ " failed on line " ++ displayLoc' expr
   show (InternalCompilerError msg) =
     "Internal compiler error (probable compiler bug): " ++ msg
 

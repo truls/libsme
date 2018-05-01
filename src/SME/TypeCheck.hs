@@ -346,7 +346,7 @@ checkStm Switch {..} = do
       Just stms -> Just <$> mapM checkStm stms
       Nothing   -> pure Nothing
   return $ Switch value' cases' defaultCase' loc
-checkStm Trace {..} =
+checkStm tr@Trace {..} =
   case str of
     LitString {stringVal = stringVal} -> do
       let len = T.count "{}" stringVal

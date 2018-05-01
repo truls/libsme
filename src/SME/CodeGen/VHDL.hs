@@ -242,6 +242,15 @@ genStm Break {} =
 genStm Barrier {} =
   return [seqstm|wait until rising_edge(clk);|]
 genStm Trace {} = return [seqstm|null;|]
+genStm Assert {..} = do
+  e <- genExpr cond
+  l <-
+    case descr of
+      Just s  -> Just <$> genLit s
+      Nothing -> pure Nothing
+  case l of
+    Just s -> return [seqstm|assert $expr:e report $expr:s severity failure;|]
+    Nothing -> return [seqstm|assert $expr:e severity failure;|]
 
 
 genGenerics :: TopDef -> [V.InterfaceDeclaration]

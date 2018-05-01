@@ -40,7 +40,7 @@ import           Data.Maybe                        (catMaybes, fromMaybe,
                                                     --wait)
 import           Control.Monad.Except              (MonadError)
 import           Control.Monad.Extra               (concatForM, concatMapM,
-                                                    mapMaybeM)
+                                                    mapMaybeM, unlessM)
 import           Control.Monad.IO.Class            (MonadIO, liftIO)
 import           Control.Monad.State               (MonadState, get, gets,
                                                     modify)
@@ -271,12 +271,25 @@ evalStm Switch {..} = do
 
 evalStm Trace {..} =
   case str of
-    LitString {stringVal = stringVal} -> do
-      let s = T.splitOn "{}" stringVal
-      vals <- map (T.pack . show) <$> mapM evalExpr subs
-      let res = mconcat $ zipWith (<>) s vals
-      liftIO $ T.putStrLn res
-    _ -> error "Not a string lit"
+    LitString {stringVal = stringVal} ->
+      unlessM (getConfig quiet) $ do
+        let s = T.splitOn "{}" stringVal
+        vals <- map (T.pack . show) <$> mapM evalExpr subs
+        let res = mconcat $ zipWith (<>) s vals
+        liftIO $ T.putStrLn res
+    _ -> throw $ InternalCompilerError "Not a string lit"
+
+evalStm as@Assert {..} =
+  unlessM (getConfig noAsserts) $ do
+    str <-
+      case descr of
+        Nothing -> return Nothing
+        Just LitString {stringVal = stringVal} -> return (Just stringVal)
+        _ -> throw $ InternalCompilerError "Not a string lit"
+    evalExpr cond >>= \case
+      (BoolVal False) -> throw $ AssertionError as (T.unpack <$> str)
+      (BoolVal True) -> return ()
+      _ -> throw $ InternalCompilerError "Assertion not a boolean"
 
 evalStm _ = error "Simulation of all statements not implemented yet"
 

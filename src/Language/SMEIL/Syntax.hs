@@ -347,6 +347,9 @@ data Statement
   | Trace { str  :: Literal
           , subs :: [Expr]
           , loc  :: SrcLoc }
+  | Assert { descr :: Maybe Literal
+           , cond  :: Expr
+           , loc   :: SrcLoc }
   | Barrier { loc :: SrcLoc }
   | Break { loc :: SrcLoc }
   | Return { retVal :: Maybe Expr
@@ -359,6 +362,7 @@ instance Located Statement where
   locOf For {..}     = locOf loc
   locOf Switch {..}  = locOf loc
   locOf Trace {..}   = locOf loc
+  locOf Assert {..}  = locOf loc
   locOf Barrier {..} = locOf loc
   locOf Break {..}   = locOf loc
   locOf Return {..}  = locOf loc

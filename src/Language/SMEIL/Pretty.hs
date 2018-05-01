@@ -161,6 +161,8 @@ instance Pretty Statement where
   ppr (Return v _) = text "return" <+> ppr v <> semi
   ppr (Trace s p _) =
     text "trace" <> parens (ppr s <> comma <+> commasep (map ppr p)) <> semi
+  ppr (Assert s p _) =
+    text "trace" <> parens (ppr (catR (comma <> space) s) <> ppr p) <> semi
 
 instance Pretty Enumeration where
   ppr (Enumeration _ n fs _) =
@@ -285,3 +287,9 @@ catL d e = catL' d <$> e
 
 catL' :: (Pretty a) => Doc -> a -> Doc
 catL' d e = d <> ppr e
+
+catR :: (Pretty a, Functor f) => Doc -> f a -> f Doc
+catR d e = catR' d <$> e
+
+catR' :: (Pretty a) => Doc -> a -> Doc
+catR' d e = ppr e <> d
