@@ -188,7 +188,8 @@ statement :: Parser S.Statement
 statement =
   withPos
     (ifStm <|> forStm <|> switchStm <|> barrierStm <|> breakStm <|> traceStm <|>
-     returnStm <|> assertStm <|>
+     returnStm <|>
+     assertStm <|>
      assignStm <?> "statement")
   where
     assignStm = S.Assign <$> (name <* equal) <*> expression <* semi
@@ -222,11 +223,11 @@ statement =
        semi)
     assertStm =
       reserved "assert" >>
-      parens
+      (parens
         -- TODO: Make the stringLit parser return a Literal type
-        (S.Assert <$> optional (withPos (S.LitString <$> stringLit) <* comma) <*>
-         expression <*
-         semi)
+         (S.Assert <$> optional (withPos (S.LitString <$> stringLit) <* comma) <*>
+          expression) <*
+       semi)
     barrierStm = reserved "barrier" >> semi >> pure S.Barrier
     breakStm = reserved "break" >> semi >> pure S.Break
     returnStm = reserved "return" >> S.Return <$> optional expression <* semi
