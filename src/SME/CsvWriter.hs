@@ -18,6 +18,8 @@ import           Control.Concurrent.STM  (TMVar, TQueue, atomically,
                                           writeTQueue)
 import           Data.ByteString.Builder (Builder, charUtf8, doubleDec,
                                           floatDec, hPutBuilder, integerDec, stringUtf8)
+import Data.Text.Encoding (encodeUtf8Builder)
+import Data.Text (Text)
 import           Data.List               (intersperse)
 import           System.IO               (IOMode (WriteMode), hClose, openFile)
 
@@ -54,6 +56,9 @@ instance ToCsvCell Float where
 
 instance ToCsvCell [Char] where
   toCsvCell = stringUtf8
+
+instance ToCsvCell Text where
+  toCsvCell = encodeUtf8Builder
 
 -- writeCsvLine :: (ToCsvCell a) => CsvChan -> [a] -> CsvChan
 -- writeCsvLine chan its =            let b' =
