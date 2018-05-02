@@ -39,7 +39,9 @@ data OutputFile = OutputFile
   { destFile :: FilePath
   , fileExt  :: String
   , content  :: T.Text
+  , deps     :: [String]
   }
+  deriving (Show)
 
 fileName :: OutputFile -> FilePath
 fileName OutputFile {destFile = d, fileExt = e} = d <.> e

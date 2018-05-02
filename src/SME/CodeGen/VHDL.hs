@@ -47,6 +47,9 @@ import           Debug.Trace                 (trace)
 csvUtil :: V.DesignFile
 csvUtil = $(parseVHDLToQexp "rts/vhdl/csv_util.vhdl")
 
+typesFile :: String
+typesFile = "sme_types"
+
 -- | Return context items used in all files
 ctx :: [V.ContextItem]
 ctx = [contextitems|library ieee;
@@ -525,8 +528,10 @@ end architecture TB;
   |]
         in
   [ TestBench OutputFile { destFile = tbName
-                         , fileExt = ".vhdl"
-                         , content = V.pprrText contents} ]
+                         , fileExt = "vhdl"
+                         , content = V.pprrText contents, deps = [ "csv_util"
+                                                                 , typesFile
+                                                                 , entName ] } ]
 
 -- Add this as an entity declaration
 genEntDec :: TopDef -> [V.InterfaceDeclaration] -> GenM V.LibraryUnit
@@ -776,7 +781,11 @@ genTopDef p@ProcessTable {..} = do
   return
     [ Regular
         OutputFile
-        {destFile = n, fileExt = ".vhdl", content = V.pprrText contents}
+        { destFile = n
+        , fileExt = ".vhdl"
+        , content = V.pprrText contents
+        , deps = [typesFile]
+        }
     ]
 
 
@@ -821,7 +830,11 @@ genTopDef nt@NetworkTable {..}
   return $
     Regular
       OutputFile
-      {destFile = n, fileExt = ".vhdl", content = V.pprrText contents} :
+      { destFile = n
+      , fileExt = ".vhdl"
+      , content = V.pprrText contents
+      , deps = typesFile : map toString deps
+      } :
     tb
 
 
@@ -851,12 +864,16 @@ use ieee.numeric_std.all;
 package sme_types is
 $packdeclits:res
 end package;|]
-  return $ Regular OutputFile {destFile = "sme_types", fileExt = ".vhdl", content = V.pprrText contents}
+  return $ Regular OutputFile {destFile = "sme_types", fileExt = ".vhdl", content = V.pprrText contents, deps = []}
 
 genMakefile :: [TaggedFile] -> OutputPlan
-genMakefile tfs =
+genMakefile tfs
+     --(os, ms) = trace (ppShow tfs) unzip $ map go tfs
+ =
   let (os, ms) = unzip $ map go tfs
-      ms' = catMaybes ms
+      ms' = mconcat ms
+      tbName = getTBName tfs
+      allTarget = Rule "all" [fromString tbName] []
       header =
         [ OtherLine "# Makefile genearted by libSME"
         , OtherLine ""
@@ -865,28 +882,45 @@ genMakefile tfs =
         , Assignment SimpleAssign "VCDFILE" "trace.vcd"
         , OtherLine ""
         , OtherLine ""
+        , allTarget
+        , OtherLine ""
         , Rule (Target "$(WORKDIR)") [] [Command "mkdir $(WORKDIR)"]
         ]
   in OutputFile
      { destFile = "Makefile"
      , fileExt = ""
      , content = toStrict $ encodeMakefile Makefile {entries = header ++ ms'}
+     , deps = []
      } :
      os
   where
-    go :: TaggedFile -> (OutputFile, Maybe Entry)
+    go :: TaggedFile -> (OutputFile, [Entry])
     go (Regular f@OutputFile {..}) =
       ( f
-      , Just
-          (Rule
-             (Target (fromString $ "$(WORKDIR)" </> ".o"))
-             []
-             [ Command $
-               fromString
-                 [i|ghdl -a --std=$(STD) --workdir=$(WORKDIR) #{fileName f}|]
-             ]))
-    go (TestBench f@OutputFile {}) = (f, Nothing)
-
+      , [ Rule
+            (Target (fromString $ "$(WORKDIR)" </> destFile <.> "o"))
+            (map fromString (fromString (fileName f) : genDeps deps))
+            [Command $ analyze f]
+        ])
+    go (TestBench f@OutputFile {..}) =
+      ( f
+      , let tbObj = ("$(WORKDIR)" </> destFile <.> "o")
+        in [ Rule
+               (Target $ fromString tbObj)
+               (map fromString (fromString (fileName f) : genDeps deps))
+               [Command $ analyze f]
+           , Rule
+               (Target $ fromString destFile)
+               ["$(WORKDIR)", fromString tbObj]
+               [Command $ elaborate destFile]
+           ])
+    genDeps = map (\x -> "$(WORKDIR)" </> x <.> "o")
+    getTBName []                            = ""
+    getTBName (TestBench OutputFile {..}:_) = destFile
+    getTBName (_:rest)                      = getTBName rest
+    analyze f =
+      T.pack [i|ghdl -a --std=$(STD) --workdir=$(WORKDIR) #{fileName f}|]
+    elaborate e = T.pack [i|ghdl -e --std=$(STD) --workdir=$(WORKDIR) #{e}|]
 
 data TaggedFile
   = Regular OutputFile
@@ -898,7 +932,11 @@ genVHDL = do
   genMakefile .
     ([ Regular
          OutputFile
-         {destFile = "csv_util", fileExt = "vhdl", content = V.pprrText csvUtil}
+         { destFile = "csv_util"
+         , fileExt = "vhdl"
+         , content = V.pprrText csvUtil
+         , deps = []
+         }
      , td
      ] ++) .
     concat <$>
