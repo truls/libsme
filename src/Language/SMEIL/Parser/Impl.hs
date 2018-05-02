@@ -206,8 +206,7 @@ statement =
       braces (many statement) <?> "for statement"
     switchStm =
       reserved "switch" >>
-      S.Switch <$> expression <*>
-      (symbol "{" *> many switchCase) <*>
+      S.Switch <$> expression <*> (symbol "{" *> many switchCase) <*>
       (optional defaultCase <* symbol "}") <?> "switch statement"
       where
         switchCase =
