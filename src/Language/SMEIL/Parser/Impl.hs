@@ -336,15 +336,23 @@ typeName :: Parser S.Type
 typeName =
   withPos
     (choice
-       [ try $ char 'i' >> S.Signed . Just <$> integer
+       [ try $ char 'i' >> S.Signed . Just <$> checkedInt
        , symbol "int" >> pure (S.Signed Nothing)
-       , try $ char 'u' >> S.Unsigned . Just <$> integer
+       , try $ char 'u' >> S.Unsigned . Just <$> checkedInt
        , symbol "uint" >> pure (S.Unsigned Nothing)
        , char 'f' >>
          ((string "32" >> pure S.Single) <|> (string "64" >> pure S.Double))
        , symbol "bool" >> pure S.Bool
        , S.Array <$> brackets (optional expression) <*> typeName
        ])
+  where
+    checkedInt = do
+      -- TOOD: Better error
+      i <- integer
+      if i > 0
+        then return i
+        else fail "Types must have a positive (non-zero) size"
+
 
 -- Utility Functions
 
