@@ -10,10 +10,11 @@ module SME.Stages
   , mkConfig
   , cmdLineOptParser
   , libOptParser
+  , printWarnings
   ) where
 
 import           Control.Exception     (throw, tryJust)
-import           Control.Monad         (when)
+import           Control.Monad         (mapM_, unless, when)
 import           Data.List             (intercalate, nub)
 import           Data.Maybe            (fromJust, isJust)
 import qualified Data.Text.IO          as TIO
@@ -28,6 +29,10 @@ import           SME.Reconstruct
 import           SME.Representation
 import           SME.Simulate
 import           SME.TypeCheck
+import           SME.Warning
+
+printWarnings :: Warns -> IO ()
+printWarnings = mapM_ print
 
 cmdLineOptParser :: Parser Config
 cmdLineOptParser =
@@ -108,7 +113,9 @@ compile conf = do
   tyEnv <-
     case res of
       Left e  -> throw $ CompilerError e
-      Right r -> pure r
+      Right (r, w) -> do
+        unless (noWarnings conf) (printWarnings w)
+        pure r
   when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
   genIn <-
     case runSim conf of
@@ -128,6 +135,8 @@ compile conf = do
   tyEnv' <-
     case res' of
       Left e  -> throw $ CompilerError e
-      Right r -> pure r
+      Right (r, w) -> do
+        unless (noWarnings conf) (printWarnings w)
+        pure r
   when (isJust (outputDir conf)) $
     genOutput (fromJust (outputDir conf)) VHDL tyEnv'

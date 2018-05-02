@@ -19,18 +19,22 @@ module SME.Simulate
   , busStep
   , applyTypes
   , finalizeSim
+  , initSimEnv
   ) where
 
 import           Control.Exception                 (throw)
 import           Control.Monad                     (foldM, forM, forM_, mapM_,
                                                     replicateM, replicateM_,
                                                     unless, when, zipWithM)
+import           Control.Monad.Reader              (MonadReader, ReaderT, asks,
+                                                    local, runReaderT)
 import           Data.Bits                         (complement, shiftL, shiftR,
                                                     xor, (.&.), (.|.))
 import           Data.IORef                        (IORef, modifyIORef',
                                                     newIORef, readIORef,
                                                     writeIORef)
-import           Data.List                         (nub, sort, sortBy, sortOn)
+import           Data.List                         (intercalate, nub, sort,
+                                                    sortBy, sortOn)
 import           Data.List.NonEmpty                (NonEmpty (..))
 import qualified Data.List.NonEmpty                as N
 import           Data.Maybe                        (catMaybes, fromMaybe,
@@ -76,10 +80,11 @@ type TopDef = BaseTopDef SimExt
 type SimEnv = BaseEnv SimExt
 
 newtype SimM a = SimM
-  { unSimM :: ReprM IO SimExt a
+  { unSimM :: ReaderT Context (ReprM IO SimExt) a
   } deriving ( Functor
              , Applicative
              , Monad
+             , MonadReader Context
              , MonadState SimEnv
              , MonadError TypeCheckErrors
              , MonadIO
@@ -129,13 +134,22 @@ instance (MonadRepr SimExt) SimM where
             withScope i (go (N.fromList is))
 
 
+data Context = Context
+  { parent :: Maybe Ident
+  }
+
+mkContext :: Context
+mkContext = Context {parent = Nothing}
+
+withParent :: Ident -> SimM a -> SimM a
+withParent x = local (\e -> e {parent = Just x})
+
+getParent :: SimM (Maybe Ident)
+getParent = asks parent
+
 newtype InstGraph = InstGraph
   { unInstGraph :: Gr Ident Ident
   }
-
--- newtype ProcGraph =
---   ProcGraph (Gr (IORef ProcInst) String) --(IORef BusInst)
-
 
 data SimExt
   = EnvExt { labelSource :: !Int
@@ -176,7 +190,7 @@ data BusChan
 
 data BusInst  = BusInst
   { chans       :: MM.Map Ident BusChan
-  , busInstName :: Ident
+  , busInstName :: Ref
   , ref         :: Ref -- ^Reference to the bus that this was instantiated from
   , readers     :: [Int] -- ^ Processes connected to the read end of the bus
   , writers     :: [Int] -- ^ Processes connected to the write end of the bus
@@ -278,7 +292,7 @@ evalStm Trace {..} =
         liftIO $ T.putStrLn res
     _ -> throw $ InternalCompilerError "Not a string lit"
 
-evalStm as@Assert {..} =
+evalStm Assert {..} =
   unlessM (getConfig noAsserts) $ do
     str <-
       case descr of
@@ -286,7 +300,7 @@ evalStm as@Assert {..} =
         Just LitString {stringVal = stringVal} -> return (Just stringVal)
         _ -> throw $ InternalCompilerError "Not a string lit"
     evalExpr cond >>= \case
-      (BoolVal False) -> throw $ AssertionError as (T.unpack <$> str)
+      (BoolVal False) -> throw $ AssertionError cond (T.unpack <$> str)
       (BoolVal True) -> return ()
       _ -> throw $ InternalCompilerError "Assertion not a boolean"
 
@@ -357,8 +371,11 @@ evalBinOp NeqOp {} (IntVal i) (IntVal j)         = pure $ BoolVal $ i /= j
 evalBinOp NeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i /= j
 evalBinOp NeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i /= j
 evalBinOp NeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i /= j
-evalBinOp _ _ _                                  =
-  throw $ InternalCompilerError "Unsupported types for binary operator"
+evalBinOp o v1 v2 =
+  throw $
+  InternalCompilerError
+    ("Unsupported types for binary operator " ++
+     show o ++ " " ++ show v1 ++ " " ++ show v2)
 
 evalUnOp :: UnOp -> Value -> SimM Value
 evalUnOp UnPlus {} (IntVal i)     = pure $ IntVal i
@@ -494,12 +511,12 @@ valueToType (ArrayVal _ v) t = valueToType (maximum v) t
 
 -- | Creates a bus instance either locally or in the C-interface depending on if
 -- the bus is stored locally or not.
-mkBusInst :: Bool -> Ident -> BusShape -> Ref -> SimM BusInst
+mkBusInst :: Bool -> Ref -> BusShape -> Ref -> SimM BusInst
 mkBusInst exposed n bs busRef = do
   chans <-
     puppetMode <$> gets (ext :: SimEnv -> SimExt) >>= \case
       Just ptr -> do
-        busPtr <- liftIO $ mkExtBus ptr (toString n)
+        busPtr <- liftIO $ mkExtBus ptr (pprrString n)
         toExtChans exposed busPtr bs
       Nothing -> toBusChans bs
   let res = BusInst (MM.fromList (sortOn fst chans)) n busRef [] []
@@ -583,7 +600,11 @@ mkVtable ds vtab = foldM go vtab ds
     go m EnumFieldDef {..} =
       return $ M.insert fieldName (ConstVal $ toValue fieldValue) m
     go m BusDef {..} = do
-      bus <- mkBusInst isExposed busName busShape busRef
+      bn <-
+        getParent >>= \case
+          Just p -> pure $ refOf p <> refOf busName
+          Nothing -> pure $ refOf busName
+      bus <- mkBusInst isExposed bn busShape busRef
       return $ M.insert busName (BusVal bus) m
     go m _ = return m
 
@@ -945,6 +966,7 @@ mkInst :: DefType -> SimM (Maybe (Ident, InstTree))
 mkInst InstDef { instantiated = instantiated
                , instDef = Instance {params = actual}
                , instName = instName
+               , anonymous = anon
                }
   -- TODO: Give instances names of the format
   -- process_name-inst_name-bus_name-chan_name (This will not be unique in
@@ -954,6 +976,10 @@ mkInst InstDef { instantiated = instantiated
  = do
   inst <- lookupTopDef instantiated
   let parList = (params :: TopDef -> ParamList) inst
+      instParent =
+        if anon
+          then id
+          else withParent instName
   -- Evaluate the parameter values
   paramVals <-
     catMaybes <$>
@@ -961,12 +987,11 @@ mkInst InstDef { instantiated = instantiated
       (\(parName, parType) (_, parVal) ->
          case parType of
            ConstPar _ ->
-             Just . (parName, ) <$>
-             (ConstVal <$> evalConstExpr parVal)
+             Just . (parName, ) <$> (ConstVal <$> evalConstExpr parVal)
            BusPar {} -> pure Nothing)
       parList
       actual
-  Just . (instName, ) <$> instEntity (M.fromList paramVals) inst
+  instParent $ Just . (instName, ) <$> instEntity (M.fromList paramVals) inst
 mkInst _ = pure Nothing
 
 -- | Adds actual bus references to the vtable of a process instance
@@ -985,6 +1010,9 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
              case parType of
                ConstPar _ -> pure Nothing
                BusPar {..} -> do
+                 -- FIXME: This is probably completely bogus since paramRef
+                 -- contains a reference used when instantiating the bus. This
+                 -- has no business hanging around in the process definition.
                  (nid, ref') <- resolveBusParam paramRef
                  case busState of
                    Input -> addLink (ProcLink (myNodeId, nid, "foo", ref'))
@@ -1014,7 +1042,7 @@ setupSimEnv ptr = do
            , puppetMode = ptr
            , simProcs = []
            , simBuses = []
-           , csvWriter = csv
+           , csvWriter = Nothing
            }
        } :: SimEnv)
   labelInstances
@@ -1043,11 +1071,11 @@ setupSimEnv ptr = do
   --     buses = nub $ map (\(ProcLink (_, _, _, b)) -> b) links
   procs <- liftIO $ mapM newIORef insts -- nub $ map snd nodes'
   -- Save buses in state
-  writeCsvHeader
   modify
     (\x ->
        let ee = envExt x
        in x {ext = ee {simProcs = procs}} :: SimEnv)
+
   -- liftIO $ print (length buses, length procs)
   -- _ <- replicateM 10 $ runSimulation procs buses
 
@@ -1096,13 +1124,16 @@ writeCsvHeader ::  SimM ()
 writeCsvHeader = do
   buses <- gets (simBuses . envExt)
   heads <-
-    sort <$> concatForM
+    sort <$>
+    concatForM
       buses
-      (\BusInst {ref = ref@(h :| _), chans = chans}
-        -> do
+      (\BusInst {chans = chans, busInstName = bn}
           -- TODO: Add a lookupGlobalRef function to avoid this
-         bName <- nameOf <$> withScope h (lookupDef ref)
-         return $  map (\x -> toString bName ++ "_" ++ toString x) (MM.keys chans))
+        ->
+         return $
+         map
+           (\x -> intercalate "_" $ map toString $ N.toList $ bn <> refOf x)
+           (MM.keys chans))
   gets (csvWriter . envExt) >>= \case
     Just a -> liftIO $ writeCsvLine a heads
     Nothing -> return ()
@@ -1127,7 +1158,7 @@ toSimEnv :: Env -> SimEnv
 toSimEnv = (<$) EmptyExt
 
 runSimM :: Env -> SimM a -> IO (Either TypeCheckErrors a, SimEnv)
-runSimM env act = runReprM (toSimEnv env) (unSimM act)
+runSimM env act = runReprM (toSimEnv env) (runReaderT (unSimM act) mkContext)
 
 
 simulate :: Int -> Env -> IO (Either TypeCheckErrors SimEnv)

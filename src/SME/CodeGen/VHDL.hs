@@ -5,12 +5,13 @@
 {-# LANGUAGE QuasiQuotes           #-}
 {-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE TemplateHaskell       #-}
+{-# LANGUAGE TupleSections         #-}
 
 module SME.CodeGen.VHDL (genVHDL) where
 
 import           Control.Arrow               (first, (***))
 import           Control.Exception           (throw)
-import           Control.Monad               (forM, mapM)
+import           Control.Monad               (forM, mapM, zipWithM)
 import           Control.Monad.State         (gets)
 import           Data.List                   (intercalate, nub, partition,
                                               sortOn)
@@ -18,6 +19,7 @@ import qualified Data.List.NonEmpty          as N
 import           Data.Maybe                  (catMaybes, mapMaybe)
 import qualified Data.Set                    as S
 import           Data.String                 (fromString)
+import qualified Data.Text                   as T
 import           Data.Text.Lazy              (toStrict)
 
 import           Control.Monad.Extra         (concatForM, concatMapM)
@@ -32,7 +34,7 @@ import           Data.Makefile.Render        (encodeMakefile)
 import           Data.String.Interpolate     (i)
 import qualified Language.VHDL               as V
 import           Language.VHDL.Quote         as Q
-import           System.FilePath             ((</>))
+import           System.FilePath             ((<.>), (</>))
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
@@ -41,7 +43,8 @@ import           SME.CodeGen.TH
 import           SME.Error
 import           SME.Representation
 
-import           Debug.Trace                 (trace)
+--import           Debug.Trace                 (trace, traceM)
+--import           Text.Show.Pretty            (ppShow)
 
 -- | Read the CSV parsing library
 csvUtil :: V.DesignFile
@@ -181,6 +184,9 @@ genExpr FunCall {name = n, params = params} = do
   let n' = pprrString n
   return [expr|$ident:(n') ($assocels:assocEls)|]
 genExpr PrimLit {lit = l} =   genLit l
+genExpr Parens {innerExpr = ex} = do
+  e <- genExpr ex
+  return [expr|($expr:e)|]
 
 -- | Generate VHDL code for an SEMIL statement
 genStm :: Statement -> GenM V.SequentialStatement
@@ -294,7 +300,6 @@ genPorts pt@ProcessTable {..} =
   forM
     (getUsedBuses pt)
     (\(ref, (refAs, mode)) ->
-       trace ("lookupDef ref " ++ show ref) $
        lookupDef ref >>= \case
          BusDef {busShape = BusShape bs} ->
            forM
@@ -395,7 +400,7 @@ genTB entName (ins, outs) =
       outTmpVals = map (first (\x -> [i|#{x}_val|])) outs
       tmpVals = sortOn fst $ inTmpVals ++ outTmpVals
 
-      ports = trace ("Ins " ++ show ins ++ " Outs " ++ show outs)
+      ports = --trace ("Ins " ++ show ins ++ " Outs " ++ show outs)
               sortOn fst $ ins ++ outs
       readVarDecls = map (uncurry genReadValDecls) tmpVals
       signals = map (\(n, t) -> [blockdecl|signal $ident:n:
@@ -571,6 +576,8 @@ genVarDecls dts =
              , [seqstm|$ident:(toString varName) := $expr:dv;|])
        _ -> return Nothing)
 
+
+-- FIXME: Eliminate the code duplication of the two following functions
 -- | Geneartes constant declarations
 genConstDecls :: [DefType] -> GenM [V.ProcessDeclarativeItem]
 genConstDecls dts =
@@ -587,51 +594,102 @@ genConstDecls dts =
                       $expr:litVal;|]
        _ -> return Nothing)
 
+-- | Geneartes constant declarations
+genConstDeclsBlock :: [DefType] -> GenM [V.BlockDeclarativeItem]
+genConstDeclsBlock dts =
+  catMaybes <$>
+  forM
+    dts
+    (\case
+       ConstDef {..} -> do
+         litVal <- withType' Untyped (genLit constVal)
+         return $
+           Just
+             [blockdecl|constant $ident:(toString constName) :
+                      $subtyind:(genBuiltinType (typeOf constDef)) :=
+                      $expr:litVal;|]
+       _ -> return Nothing)
+
 
 -- | Genearte VHDL code for instance declarations
-genInstDecls :: [DefType] -> GenM [V.ConcurrentStatement]
+genInstDecls :: [DefType] -> GenM [(V.ConcurrentStatement, Ident)]
 genInstDecls dts =
   catMaybes <$>
   mapM
     (\case
-       InstDef {instantiated = instantiated, instDef = instDef@Instance {}} -> do
+       InstDef { instantiated = instantiated
+               , instDef = instDef@Instance {}
+               , params = params
+               , anonymous = anon
+               } -> do
          inst <- lookupTopDef instantiated
          -- Get generic association maps
          constAssocs <- genGenericMap (refOf instantiated) instDef
          -- Get port association maps
+         -- Generate the buses that we can from the parameter lists
+         fromParams <- genPortParamMap instantiated params
+         let fromParamRefs = map fst fromParams
+             remainingBuses =
+               filter (\x -> fst x `elem` fromParamRefs) (getUsedBuses inst)
+             fromParams' = concatMap snd fromParams
          portAssocs <-
            concatForM
-             (getUsedBuses inst)
+             remainingBuses
              (\(ref, (refAs, _)) -> do
                 bus <- lookupDef ref
-                return $
-                  genPortMap (nameOf bus) refAs (busShape (bus :: DefType)))
+                let n = genChName anon (nameOf instDef) (nameOf bus)
+                return $ genPortMap n refAs (busShape (bus :: DefType)))
          return $
-           if null constAssocs
-             then Just
-                    [constm|$ident:(toString $ procName inst):
+           let n = genInstName anon (nameOf inst) (nameOf instDef)
+           in if null constAssocs
+                then Just
+                       ( [constm|$ident:n:
                            entity work.$ident:(toString $ procName inst)
                            port map (
-                             $assocels:portAssocs,
+                             $assocels:(portAssocs ++ fromParams'),
                              clk => clk,
                              rst => rst);
                            |]
-             else Just
-                    [constm|$ident:(toString $ procName inst):
+                       , procName inst)
+                else Just
+                       ( [constm|$ident:n:
                            entity work.$ident:(toString $ procName inst)
                            generic map ($assocels:constAssocs)
                            port map (
-                             $assocels:portAssocs,
+                             $assocels:(portAssocs ++ fromParams'),
                              clk => clk,
                              rst => rst);
                            |]
+                       , procName inst)
              -- Only generate input/output buses if this is an exposed bus
        _ -> pure Nothing)
     dts
+  where
+    genInstName :: Bool -> Ident -> Ident -> String
+    genInstName anon pName iName =
+      toString $
+      if anon
+        then pName
+        else iName
+    genPortParamMap ::
+         Ident -> [InstParam] -> GenM [(Ref, [V.AssociationElement])]
+    genPortParamMap topDef pars = do
+      forParList <- (params :: TopDef -> ParamList) <$> lookupTopDef topDef
+      catMaybes <$>
+        zipWithM
+          (\(_, parType) p ->
+             case (parType, p) of
+               (BusPar {..}, InstBusPar par) -> do
+                 busName <- refOf . nameOf <$> lookupDef ref
+                 return $ Just (ref, genPortMap busName par parBusShape)
+               _ -> return Nothing)
+          forParList
+          pars
 
 -- | Generate the generic maps for an instance
 genGenericMap :: Ref -> Instance -> GenM [V.AssociationElement]
 genGenericMap topDef Instance {params = instPars} = do
+  -- TODO: Maybe rewrite to use the params list in InstDef
   inst <- lookupTopDef topDef
   let forParList = (params :: TopDef -> ParamList) inst
       parList = zipWith (\(a, b) (_, c) -> (a, b, c)) forParList instPars
@@ -652,43 +710,60 @@ genGenericMap topDef Instance {params = instPars} = do
 -- generate the corresponding signals and otherwise we genearte the appropriate
 -- input/output ports.
 getUsedBusesOfInsts :: [DefType] -> GenM [(Maybe BusState, Ref, BusShape)]
-getUsedBusesOfInsts dts =
+getUsedBusesOfInsts dts = do
+  buses <-
+    concatForM
+      dts
+      (\case
+         InstDef { instantiated = instantiated
+                 , anonymous = anonymous
+                 , instName = instName
+                 } -> do
+           inst <- lookupTopDef instantiated
+           return $ map (, instName, anonymous) (getUsedBuses inst)
+         _ -> pure [])
   concatForM
-    dts
-    (\case
-       InstDef {instantiated = instantiated} -> do
-         inst <- lookupTopDef instantiated
-         let ubs = getUsedBuses inst
-         forM
-           ubs
-           (\(def, (_, state)) ->
-              lookupDef def >>= \case
-                bd@BusDef {isExposed = ex, busShape = bs} ->
-                  if ex
-                    then pure (Just state, refOf (nameOf bd), bs)
-                    else pure (Nothing, refOf (nameOf bd), bs)
-                _ -> throw $ InternalCompilerError "Bus is not a bus")
-       _ -> pure [])
+    buses
+    -- FIXME: Woha!
+    (\((def, (_, state)), instName, anonymous) ->
+       lookupDef def >>= \case
+         bd@BusDef {isExposed = ex, busShape = bs} ->
+           let n = genChName anonymous instName (nameOf bd)
+           in case (ex, state) of
+                (True, _)       -> pure [(Just state, n, bs)]
+                -- For non-exposed buses, we only add connective signals for
+                -- outwards-facing connections. That way, we prevent creating
+                -- duplicated signal names.
+                (False, Output) -> pure [(Nothing, n, bs)]
+                (False, _)      -> pure []
+         _ -> throw $ InternalCompilerError "Bus is not a bus")
 
-genIntSignals :: [DefType] -> GenM V.ArchitectureDeclarativePart
-genIntSignals dt = genIntSignals' =<< getUsedBusesOfInsts dt
 
-genIntSignals' ::
-     [(Maybe BusState, Ref, BusShape)] -> GenM V.ArchitectureDeclarativePart
-genIntSignals' a = catMaybes <$> concatMapM go a
+genChName :: Bool -> Ident -> Ident -> Ref
+genChName True _iName bName = refOf bName
+genChName False iName bName = refOf iName <> refOf bName
+
+genInstSignals :: [DefType] -> GenM V.ArchitectureDeclarativePart
+genInstSignals dt = genInstSignals' =<< getUsedBusesOfInsts dt
   where
-    go (Nothing, ref, shape) =
-      forM
-        (unBusShape shape)
-        (\(sigName, (ty, l)) -> do
-           let n = genIdents $ N.toList ref <> [sigName]
-           dval <- genDefaultExpr l ty
-           return $
-             Just
-               [blockdecl|signal $ident:n :
-                         $subtyind:(genType ty) := $expr:dval;|])
-    go _ = return []
+    genInstSignals' ::
+         [(Maybe BusState, Ref, BusShape)] -> GenM V.ArchitectureDeclarativePart
+    genInstSignals' a = catMaybes <$> concatMapM go a
+      where
+        go (Nothing, ref, shape) =
+          forM
+            (unBusShape shape)
+            (\(sigName, (ty, l)) -> do
+               let n = genIdents $ N.toList ref <> [sigName]
+               dval <- genDefaultExpr l ty
+               return $
+                 Just
+                   [blockdecl|signal $ident:n :
+                          $subtyind:(genType ty) := $expr:dval;|])
+        go _ = return []
 
+
+-- | Generates external entity signals from exposed buses
 genExtPorts :: [DefType] -> GenM [V.InterfaceDeclaration]
 genExtPorts dt = genExtPorts' =<< getUsedBusesOfInsts dt
   where
@@ -742,12 +817,13 @@ genTBWires' l =
 
 -- | Generates port mappings
 -- Generate mappings remote name => local name
-genPortMap :: Ident -> Ref -> BusShape -> [V.AssociationElement]
+--genPortMap :: ParamType
+genPortMap :: Ref -> Ref -> BusShape -> [V.AssociationElement]
 genPortMap busName localRef = map go . unBusShape
   where
     go (sigName, (_, _)) =
       let theirName = genIdents $ N.toList localRef <> [sigName]
-          myName = genIdents [busName, sigName]
+          myName = genIdents $ N.toList (busName <> refOf sigName)
       in [assocel|$ident:theirName => $ident:myName|]
 
 -- | Generates a VHDL file containing an SMEIL process
@@ -803,8 +879,9 @@ genTopDef nt@NetworkTable {..}
  = do
   let n = toString (nameOf nt)
   let decls = M.elems symTable
-  instDecls <- genInstDecls decls
-  intSigs <- genIntSignals decls
+  (instDecls, deps) <- unzip <$> genInstDecls decls
+  intSigs <- genInstSignals decls
+  consts <- genConstDeclsBlock (M.elems symTable)
   extPorts <- genExtPorts decls
   let contents =
         [designfile|$contextitems:ctx
@@ -817,6 +894,7 @@ genTopDef nt@NetworkTable {..}
                             end $ident:n;
                             architecture rtl of $ident:n is
                               $blockdecls:intSigs
+                              $blockdecls:consts
                             begin
                               $constms:instDecls
                             end rtl;

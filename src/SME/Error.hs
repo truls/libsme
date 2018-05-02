@@ -14,13 +14,15 @@ module SME.Error
 
 import           Control.Exception
 import           Data.Containers       (IsMap (..))
-import           Data.Loc
+import           Data.Loc              (Loc (NoLoc), Located, SrcLoc (SrcLoc),
+                                        displayLoc)
 import qualified Data.Map.Strict       as M
 import           Data.Maybe            (fromMaybe)
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax (Nameable (..), Ref, ToString (..),
                                         Typeness (..))
+import           SME.Util
 
 type NameMap = M.Map String Ref
 
@@ -70,6 +72,7 @@ data TypeCheckErrors where
   NotAnArray :: (Located a, Pretty a) => a -> TypeCheckErrors
   ArgumentError :: (Located a) => a -> String -> TypeCheckErrors
   AssertionError :: (Located a, Pretty a) => a -> Maybe String -> TypeCheckErrors
+  FormatStringMismatch :: (Show a, Located b) => a -> a -> b -> TypeCheckErrors
   InternalCompilerError :: String -> TypeCheckErrors
   deriving (Exception)
 
@@ -82,19 +85,19 @@ instance RenderError (M.Map String Ref) TypeCheckErrors where
     "Wrong number of parameters. Entity " ++
     origName ent m ++
     " (at " ++
-    displayLoc (locOf ent) ++
+    displayLoc' ent ++
     ")" ++
     " expected " ++
     pluralize expected "parameter" ++
     " but was instantiated with " ++
-    pluralize actual "parameter" ++ " at " ++ displayLoc (locOf inst') ++ "."
+    pluralize actual "parameter" ++ " at " ++ displayLoc' inst' ++ "."
   renderError m (NamedParameterMismatch expected actual ent) =
     "The name of parameter " ++
     toString actual ++
     " in instance declaration of " ++
     origName ent m ++
     " at " ++
-    displayLoc (locOf actual) ++
+    displayLoc' actual ++
     " is actually named " ++ toString expected ++ "."
   renderError _ e = show e
 
@@ -110,53 +113,53 @@ instance Show TypeCheckErrors where
     "Name " ++
     toString new ++
     " already defined at " ++
-    displayLoc (locOf new) ++
-    ". Previous definition was " ++ displayLoc (locOf prev)
+    displayLoc' new ++ ". Previous definition was " ++ displayLoc' prev
   show (UndefinedName n) =
-    "Name " ++
-    pprrString n ++ " is undefined at " ++ displayLoc (locOf n) ++ "."
+    "Name " ++ pprrString n ++ " is undefined at " ++ displayLoc' n ++ "."
   show (TypeMismatchError t1 t2) =
     "Cannot match type " ++
     pprrString t2 ++
-    " with expected type " ++ pprrString t1 ++ ". At " ++ displayLoc (locOf t2)
+    " with expected type " ++ pprrString t1 ++ ". At " ++ displayLoc' t2
   show (ExpectedBus i) =
     "Parameter " ++
-    toString i ++
-    " does not refer to a bus as expected at " ++ displayLoc (locOf i)
+    toString i ++ " does not refer to a bus as expected at " ++ displayLoc' i
   show (ExprInvalidInContext e) =
     "Expression: " ++
-    pprrString e ++ " is invalid in context at " ++ displayLoc (locOf e)
+    pprrString e ++ " is invalid in context at " ++ displayLoc' e
   show (BusShapeMismatch expected actual inst) =
     "Unable to unify bus shapes in instantiation at " ++
-    displayLoc (locOf inst) ++
+    displayLoc' inst ++
     " expected: " ++ show expected ++ " but saw " ++ show actual ++ "."
   show (InstanceParamTypeMismatch inst) =
-    "Wrong parameter type (bus parameter where a constant is expected or vice-versa) in instantiation at " ++
-    displayLoc (locOf inst)
+    "Wrong parameter type (bus parameter where a constant is" ++
+    " expected or vice-versa) in instantiation at " ++ displayLoc' inst
   show (ReferencedAsValue def) =
     "Object " ++
-    toString (nameOf def) ++
-    " referenced as value " ++ displayLoc (locOf def) ++ "."
+    toString (nameOf def) ++ " referenced as value " ++ displayLoc' def ++ "."
   show (BusReferencedAsValue def) =
     "Bus " ++
     pprrString def ++
     " referenced as value at " ++
-    displayLoc (locOf def) ++ ". Maybe you meant to access one of its channels?"
+    displayLoc' def ++ ". Maybe you meant to access one of its channels?"
   show (WroteInputBus def) =
-    "Cannot write to input bus " ++
-    pprrString def ++ " at " ++ displayLoc (locOf def)
+    "Cannot write to input bus " ++ pprrString def ++ " at " ++ displayLoc' def
   show (WroteConstant def) =
     "Cannot write to read-only constant " ++
-    pprrString def ++ " at " ++ displayLoc (locOf def)
+    pprrString def ++ " at " ++ displayLoc' def
   show (ReadOutputBus def) =
     "Cannot read from output bus " ++
-    pprrString def ++ " at " ++ displayLoc (locOf def)
+    pprrString def ++ " at " ++ displayLoc' def
   show (NotAnArray def) =
-    pprrString def ++ " is not an array at " ++ displayLoc (locOf def)
+    pprrString def ++ " is not an array at " ++ displayLoc' def
   show (ArgumentError def msg) = msg ++ " At: " ++ displayLoc' def
   show (AssertionError expr str) =
     let msg = fromMaybe (pprrString expr) str
     in "Assertion " ++ msg ++ " failed on line " ++ displayLoc' expr
+  show (FormatStringMismatch expected actual def) =
+    "Format string expected " ++
+    show expected ++
+    " parameters, but was only given " ++
+    show actual ++ ". At " ++ displayLoc' def
   show (InternalCompilerError msg) =
     "Internal compiler error (probable compiler bug): " ++ msg
 
@@ -183,9 +186,6 @@ instance Show ImportingError where
 importedFromMsg :: SrcLoc -> String
 importedFromMsg (SrcLoc NoLoc) = ""
 importedFromMsg (SrcLoc l)     = " Imported from " ++ displayLoc l
-
-displayLoc' :: (Located a) => a -> String
-displayLoc' = displayLoc . locOf
 
 prettyList :: (ToString s, Located s) => [s] -> String
 prettyList []     = ""

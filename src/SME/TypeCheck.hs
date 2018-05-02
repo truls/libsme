@@ -12,12 +12,12 @@ module SME.TypeCheck
   ( typeCheck
   ) where
 
-import           Control.Exception           (throw)
+import           Control.Exception           (throw, throwIO)
 import           Control.Monad               (foldM, forM, forM_, unless,
                                               zipWithM)
 import           Control.Monad.Except        (MonadError)
 
-import           Control.Monad.Identity      (Identity)
+import           Control.Monad.Identity      (Identity, runIdentity)
 import           Control.Monad.State         (MonadState)
 import           Control.Monad.Writer        (MonadWriter, WriterT, runWriterT,
                                               tell)
@@ -66,15 +66,14 @@ type SymTab = BaseSymTab Void
 --   deriving (Show)
 
 --type Log = [TyLog]
-type Log = [TypeCheckWarning]
 
 -- | Main typechecking monad
 newtype TyM a = TyM
-  { unTyM :: WriterT Log (ReprM Identity Void) a
+  { unTyM :: WriterT Warns (ReprM Identity Void) a
   } deriving ( Functor
              , Applicative
              , Monad
-             , MonadWriter Log
+             , MonadWriter Warns
              , MonadState Env
              , MonadError TypeCheckErrors
              )
@@ -131,10 +130,10 @@ trackUsage t r act
   lookupDef r >>= \case
     ConstDef {} -> do
       unless (t == Load) $ throw $ WroteConstant r
-      updateDef r (\x -> x {constState = Used})
+      updateDef r (\x -> Just x {constState = Used})
       act r
     VarDef {} -> do
-      updateDef r (\x -> x {varState = Used})
+      updateDef r (\x -> Just x {varState = Used})
       act r
     BusDef {busRef = bRef} -> do
       bus <- lookupDef bRef
@@ -163,10 +162,28 @@ trackUsage t r act
     _ -> act r
 
 
+-- | Return true if type 'b' can be "contained" by type 'a'
+typeSubsetOf :: (MonadRepr s m) => Typeness -> Typeness -> m ()
+typeSubsetOf t1@(Typed a) t2@(Typed b) =
+  -- TODO: Make a dedicated error for this function.
+  unless (go a b) $ throw $ TypeMismatchError t2 t1
+  where
+    go (Unsigned Nothing _) (Unsigned _ _)         = True
+    go (Signed Nothing _) (Unsigned _ _)           = True
+    go (Signed Nothing _) (Signed _ _)             = True
+    go (Unsigned l1 _) (Unsigned l2 _)             = l1 >= l2
+    go (Signed (Just l1) _) (Unsigned (Just l2) _) = l1 >= (l2 + 1)
+    go (Signed l1 _) (Signed l2 _)                 = l1 >= l2
+    go l1 l2                                       = l1 == l2
+typeSubsetOf t1 t2 = throw $ TypeMismatchError t2 t1
+
 unifyTypes ::
      (MonadRepr s m) => Maybe Type -> Typeness -> Typeness -> m Typeness
 unifyTypes expected t1 t2 = do
   res <- go t1 t2
+  getTypeCtx >>= \case
+    Just t  -> typeSubsetOf t res
+    Nothing -> return ()
   case expected of
     Just t  -> unifyTypes Nothing (Typed t) res
       -- unless (Typed t == res) $ throw $ TypeMismatchError (Typed t) res
@@ -280,17 +297,16 @@ checkExpr Unary {..} = do
           _         -> t'
   return (t'', Unary t'' unOp e' loc)
 checkExpr Parens {..} = do
-  (t', e') <- checkExpr expr
+  (t', e') <- checkExpr innerExpr
   return (t', Parens t' e' loc)
 
 -- | Check statements and update references as needed
-checkStm :: (MonadRepr s m) => Statement -> m Statement
+checkStm :: Statement -> TyM Statement
 checkStm Assign {..} = do
-  destTy <-
-    trace ("Looking up type for " ++ pprrString dest) $
-    trackUsage Store dest lookupName
-  (t, val') <- checkExpr val
-  _ <- unifyTypes Nothing destTy t
+  destTy <- trackUsage Store dest lookupName
+  -- TODO: Clean up these double withTypectx
+  (t, val') <- withTypeCtx destTy $ checkExpr val
+  _ <- withTypeCtx destTy $ unifyTypes Nothing destTy t
   return $ Assign dest val' loc
 checkStm If {..} = do
   (condTy, cond') <- checkExpr cond
@@ -340,12 +356,29 @@ checkStm tr@Trace {..} =
   case str of
     LitString {stringVal = stringVal} -> do
       let len = T.count "{}" stringVal
-      unless (len == length subs) (error "Length mismatch")
+      unless (len == length subs) $
+        throw $ FormatStringMismatch len (length subs) tr
       subs' <- mapM checkExpr' subs
       return $ Trace str subs' loc
-    _
-      -- TODO: Better error
-     -> error "First argument of trace must be a string literal"
+    _ ->
+      throw $
+      ArgumentError tr "First argument of trace must be a string literal"
+checkStm as@Assert {..}
+ = do
+  -- If the first argument is present, make sure that it is a string
+  case descr of
+    Nothing -> return ()
+    Just LitString {} -> return ()
+    _ ->
+      throw $
+      ArgumentError
+        as
+        "First argument of assert must be a string literal or condition"
+  (ty', c') <- checkExpr cond
+  -- TODO: Replace this with an explicit expectation parameter for checkExpr
+  _ <- unifyTypes Nothing ty' (Typed (Bool noLoc))
+  return $ Assert descr c' loc
+
 checkStm Barrier {..} = return $ Barrier loc
 checkStm Break {..} = return $ Break loc
 checkStm Return {..} = do
@@ -359,22 +392,35 @@ checkStm Return {..} = do
     Nothing -> return (Untyped, Nothing)
   return $ Return retVal' loc
 
+
 -- | Check and annotate the all topLevel definitions
-checkDef :: (MonadRepr s m) => DefType -> m DefType
-checkDef v@VarDef {..} = do
+checkDef :: DefType -> TyM DefType
+checkDef v@VarDef {..}
   -- Check that range is within type constraint
-  res <- go varDef
+ = do
+  res <- withTypeCtx (typeOf varDef) $ go varDef
   return $ v {varDef = res}
-  where
     -- TODO: Actually check that a) default value, if existing, is within type
     -- and range constraints and that range constraints, if existing, is within
     -- type bounds
-    go var@Variable {..} = pure var
+  where
+    go Variable {..} = do
+      e' <-
+        case val of
+          Just e -> do
+            ee <- withTypeCtx ty $ checkExpr' e
+            pure (Just ee)
+          Nothing -> pure val
+      return $ Variable name ty e' range loc
 checkDef c@ConstDef {..} = do
   res <- go constDef
-  return $ c { constDef = res }
+  return $ c {constDef = res}
   where
-    go constant@Constant {..} = pure constant
+    go ci@Constant {..} = do
+      e' <- withTypeCtx ty $ checkExpr' val
+      -- FIXME: This will emit a warning for non-int types.
+      unless (isUnsized ty) $ tell [BoundedVarForConst ci ty]
+      return $ Constant name ty e' loc
 checkDef b@BusDef {busDef = busDef} = do
   res <- go busDef
   return $ b {busDef = res}
@@ -426,9 +472,12 @@ checkTopDef ProcessTable {stms = stms, procName = procName} = do
     warnUnused (M.elems symTab)
     return res
   updateTopDef procName  (\x -> x { stms = body'} )
-checkTopDef NetworkTable {..} =
-  -- TODO: Check network definitions also.
+checkTopDef NetworkTable {netName = netName} = do
+  updateDefsM_ netName checkDef
   updateTopDef netName id
+  withScope netName $ do
+    symTab <- symTable <$> getCurEnv
+    warnUnused (M.elems symTab)
 
 -- | Throws if passed a compound name
 ensureSingleRef :: (References a) => a -> Ident
@@ -513,28 +562,23 @@ buildDeclTab ctx = foldM go M.empty
     go m (InstDecl i) = mkInstDecl m i
     go _ GenDecl {} = error "TODO: Generator declarations are unhandeled"
 
+-- Identifiers cannot start with _ so we have those names reserved
+-- for our private namespace. Prefix with __ to avoid clashing with
+-- names introduced by the import handler
+  -- TODO: More accurate location of anonymous name
+mkAnonName :: (Pretty p, Located p) => Maybe Ident -> p -> Ident
+mkAnonName i n =
+  fromMaybe (Ident ("__anonymous_" <> pprr n) (fromLoc $ locOf n)) i
+
 mkInstDecl :: (MonadRepr s m) => SymTab -> Instance -> m SymTab
 mkInstDecl m i@Instance {..} =
-  let name
-        -- Identifiers cannot start with _ so we have those names reserved
-        -- for our private namespace. Prefix with __ to avoid clashing with
-        -- names introduced by the import handler
-        -- TODO: More accurate location of anonymous name
-       =
-        fromMaybe
-          (Ident ("__anonymous_" <> pprr elName) (fromLoc $ locOf elName))
-          instName
+  let name = mkAnonName instName elName
       isAnon = isNothing instName
   in ensureUndef name m $
      return $
      M.insert
        (toString name)
-       (InstDef
-          name
-          i
-          (ensureSingleRef elName)
-          isAnon
-          Void)
+       (InstDef name i (ensureSingleRef elName) [] isAnon Void)
        m
 
 mkBusDecl :: (MonadRepr s m) => SymTab -> Ident -> Bus -> m SymTab
@@ -608,6 +652,13 @@ groupWithM f ((x, y):xs)= do
   rest <- groupWithM f end
   return $ (x, res) : rest
 
+-- | Non monadic version of eq-sort
+groupWith :: (Eq a) => (b -> b -> b) -> [(a, b)] -> [(a, b)]
+groupWith f i =
+  let f' a b = pure $ f a b
+  in runIdentity $ groupWithM f' i
+
+-- | Unifies the list of parameters originating from a single entity.
 unifyProcParam ::
      (MonadRepr s m, Located l)
   => (l, [(Ident, ParamType)])
@@ -619,13 +670,22 @@ unifyProcParam (_, ps1) (inst, ps2) = do
   where
     go (i1, ConstPar t1) (_, ConstPar t2) = do
       res <- unifyTypes Nothing t1 t2
-      trace ("Unified ( " ++ show i1 ++ " types " ++ show t1 ++ " and " ++ show t2 ++ " yielding " ++ show res) $ return (i1, ConstPar res)
-    go (i1, t1@BusPar {}) (_, t2@BusPar {}) =
-      trace ("Comparing " ++ show t1 ++ " and " ++ show t2) $
+      --trace ("Unified ( " ++ show i1 ++ " types " ++ show t1 ++ " and " ++
+      --show t2 ++ " yielding " ++ show res) $
+      return (i1, ConstPar res)
+    go (i1, t1@BusPar {}) (_, t2@BusPar {})
+      --trace ("Comparing " ++ show t1 ++ " and " ++ show t2) $
+     =
       unless (t1 == t2) (throw $ BusShapeMismatch t1 t2 inst) >> return (i1, t1)
     go _ _ = throw $ InstanceParamTypeMismatch inst
 
 -- TODO: Set the param attribute of instances to something reasonable.
+
+fixupNewInstDecls :: (Ord a, Ord b) => [(a, b, c)] -> [(a, b, [c])]
+fixupNewInstDecls =
+  map (\((a, b), c) -> (a, b, c)) .
+  groupWith (<>) . sortOn fst . map (\(a, b, c) -> ((a, b), [c]))
+
 
 -- | Infer the types of process parameters by checking how they are instantiated
 -- and normalize instance parameter list to a <name>: <value> format
@@ -638,10 +698,19 @@ inferParamTypes insts = do
     forM
       insts
       (\(instCtxName, inst) -> (withScope instCtxName . go instCtxName) inst)
-  params <- groupWithM unifyProcParam $ sortOn fst instTypes
-  return $ map (\(i, (newInst, pars)) -> (i, pars, newInst)) params
+  let (elNames, newInsts, ress) = unzip3 instTypes
+      (params, newInstDecls) = unzip $ map unzip ress
+      params' = zip elNames (zip newInsts params)
+  params'' <- groupWithM unifyProcParam $ sortOn fst params'
+  mapM_
+    (\(x, y, z) -> updateInstParam x y z)
+    (concatMap fixupNewInstDecls newInstDecls)
+  return $ map (\(i, (newInst, pars)) -> (i, pars, newInst)) params''
   where
-    go ctx i@Instance {elName = instantiated, params = actual} = do
+    go ctx i@Instance { elName = instantiated
+                      , params = actual
+                      , instName = instName
+                      } = do
       el <- lookupTopDef instantiated
       let formal = getParams el
           elName = nameOf el
@@ -656,7 +725,8 @@ inferParamTypes insts = do
         (throw $ ParamCountMismatch (length actual) (length formal) i elName)
       -- Generate list of inferred parameter types for this instance
       --(elName, ) . (i, ) <$>
-      res <- zipWithM
+      res <-
+        zipWithM
           (\Param {count = count, dir = forDir, name = forName} (ident, e)
             -- If name is unnamed, substitute matching name to normalize
             -- parameter listings. If name is specified, make sure that the name
@@ -668,21 +738,24 @@ inferParamTypes insts = do
                throw $ NamedParameterMismatch forName actualName elName
               -- For every parameter, return a name, type tuple.
              case forDir of
-               Const _ -> do
+               Const _
                  -- TODO: We need to make sure that e refers to only constant
                  -- values here (i.e., only constants and cont parameters)
                  -- Restrictions like this could be placed in a reader monad
+                -> do
                  eTy <- checkExpr' e
-                 pure (forName, ConstPar (typeOf eTy))
-               In _ -> mkBusDef Input e forName count instantiated
-               Out _ -> mkBusDef Output e forName count instantiated
-          )
+                 pure
+                   ( (forName, ConstPar (typeOf eTy))
+                   , (ctx, mkAnonName instName instantiated, InstConstPar eTy))
+               In _ -> mkBusDef Input e forName count instantiated instName ctx
+               Out _ ->
+                 mkBusDef Output e forName count instantiated instName ctx)
           formal
           actual
-      let newInstPars = zipWith (\(n, _) (_, e) -> (Just n, e)) res actual
-          newInst = i { params = newInstPars } :: Instance
-      return (elName, (newInst, res))
-    mkBusDef dir e forName count instantiated = do
+      let newInstPars = zipWith (\((n, _), _) (_, e) -> (Just n, e)) res actual
+          newInst = i {params = newInstPars} :: Instance
+      return (elName, newInst, res)
+    mkBusDef dir e forName count instantiated instName ctx = do
       count' <-
         case count of
           Just (Just expr) -> exprReduceToInt expr >>= pure . Just
@@ -692,21 +765,32 @@ inferParamTypes insts = do
       withScope instantiated $ setUsedBus (busRef bDef) (refOf forName, dir)
       shape <- busToShape (busDef bDef)
       return
-        ( forName
-        , BusPar
-          { ref = busRef bDef
-          , paramRef = refOf locRef
-          , localRef = refOf forName
-          , busShape = shape
-          , busState = dir
-          , array = count'
-          })
-                                -- bus here. Find some way of identifying buses
-                                -- by matching their shapes/field names
+        ( ( forName
+          , BusPar
+            { ref = busRef bDef
+            , paramRef = refOf locRef
+            , localRef = refOf forName
+            , parBusShape = shape
+            , busState = dir
+            , array = count'
+            })
+        , (ctx, mkAnonName instName instantiated, InstBusPar (refOf locRef)))
+          -- bus here. Find some way of identifying buses
+          -- by matching their shapes/field names
     getParams ProcessTable {procDef = procDef} =
       (params :: Process -> [Param]) procDef
     getParams NetworkTable {netDef = netDef} =
       (params :: Network -> [Param]) netDef
+
+-- | Adds params 'pars' in instance 'd' located in entity 'i'
+updateInstParam :: (MonadRepr Void m) => Ident -> Ident -> [InstParam] -> m ()
+updateInstParam i d pars =
+  withScope i $
+  updateDef
+    d
+    (\case
+       idef@InstDef {} -> Just (idef {params = pars} :: DefType)
+       _ -> Nothing)
 
 -- | Populate typechecking environment with all functions defined.
 buildEnv :: DesignFile -> TyM ()

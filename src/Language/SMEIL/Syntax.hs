@@ -45,6 +45,7 @@ module Language.SMEIL.Syntax
   , References(..)
   , Ref
   , bitSize
+  , isUnsized
   ) where
 
 import           Data.Data                       (Data, Typeable)
@@ -90,6 +91,9 @@ data Typeness
 instance Located Typeness where
   locOf (Typed t) = locOf t
   locOf Untyped   = noLoc
+
+instance Typed Typeness where
+  typeOf = id
 
 class Typed a where
   typeOf :: a -> Typeness
@@ -414,9 +418,9 @@ data Expr
             , name   :: Name
             , params :: [Expr]
             , loc    :: SrcLoc }
-  | Parens { ty   :: Typeness
-           , expr :: Expr
-           , loc  :: SrcLoc }
+  | Parens { ty        :: Typeness
+           , innerExpr :: Expr
+           , loc       :: SrcLoc }
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance {-# OVERLAPPING #-} Typed Expr where
@@ -539,7 +543,7 @@ data Type
   | Array { arrLength :: Maybe Expr
           , innerTy   :: Type
           , loc       :: SrcLoc }
-  deriving (Ord, Show, Data, Typeable)
+  deriving (Show, Ord, Data, Typeable)
 
 instance Typed Type where
   typeOf = Typed
@@ -556,6 +560,13 @@ instance Eq Type where
                                                   } =
     (al1 == al2) && (ty1 == ty2)
   _ == _ = False
+
+isUnsized :: (Typed a) => a -> Bool
+isUnsized ty = case typeOf ty of
+  (Typed (Signed Nothing _))   -> True
+  (Typed (Unsigned Nothing _)) -> True
+  (Typed _)                    -> False
+  Untyped                      -> True
 
 instance Located Type where
   locOf Signed {..}   = locOf loc

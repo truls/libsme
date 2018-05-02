@@ -43,6 +43,7 @@ module SME.Representation
   , Config(..)
   , Stages(..)
   , mkConfig
+  , InstParam(..)
   ) where
 
 import           Control.Exception               (throw)
@@ -332,19 +333,33 @@ class ( Monad m
   updateDef ::
        (MonadRepr s m, Located a, References a, Pretty a)
     => a
-    -> (BaseDefType s -> BaseDefType s)
+    -> (BaseDefType s -> Maybe (BaseDefType s))
     -> m ()
   updateDef d f = do
     cur <- gets curEnv
     def <- lookupDef d
     traceMS ("In updateDef: " ++ show (nameOf def)) -- ++ " " ++ show cur)
     let def' = f def
-    updateTopDef
-      cur
-      (\x -> x {symTable = M.insert (toString (nameOf def)) def' (symTable x)})
+    when (isJust def') $
+      updateTopDef
+        cur
+        (\x ->
+           x
+           { symTable =
+               M.insert (toString (nameOf def)) (fromJust def') (symTable x)
+           })
 
   getConfig :: (MonadRepr s m) => (Config -> a) -> m a
   getConfig f = f <$> gets config
+
+  getTypeCtx :: (MonadRepr s m) => m (Maybe Typeness)
+  getTypeCtx = gets typeCtx
+
+  withTypeCtx :: (MonadRepr s m) => Typeness -> m a -> m a
+  withTypeCtx t act = do
+    prev <- getTypeCtx
+    modify (\x -> x { typeCtx = Just t })
+    act <* modify (\x -> x { typeCtx = prev })
 
 lookupEx ::
      (ToString a, Pretty a, Located a, MonadRepr s m)
@@ -490,7 +505,7 @@ data BaseDefType a
   | InstDef { instName     :: Ident
             , instDef      :: Instance
             , instantiated :: Ident
-            --, params       :: [Ref]
+            , params       :: [InstParam]
             , anonymous    :: Bool
             , ext          :: a
               -- Also track: Parameters
@@ -525,11 +540,11 @@ instance Nameable (BaseDefType a) where
   nameOf ParamDef {..}     = paramName
 
 -- | Sets the type of a definition when possible
-setType :: Typeness -> BaseDefType a -> BaseDefType a
-setType t d@VarDef {varDef = v@Variable {}} = d { varDef = v { ty = t }}
-setType _ d                                 = d
+setType :: Typeness -> BaseDefType a -> Maybe (BaseDefType a)
+setType t d@VarDef {varDef = v@Variable {}} = Just $ d {varDef = v {ty = t}}
+setType _ _                                 = Nothing
 
-setBusChanType :: Ident -> Typeness -> BaseDefType a -> BaseDefType a
+setBusChanType :: Ident -> Typeness -> BaseDefType a -> Maybe (BaseDefType a)
 setBusChanType ident ty b@BusDef {busShape = shape} =
   let shape' =
         BusShape $
@@ -539,8 +554,8 @@ setBusChanType ident ty b@BusDef {busShape = shape} =
                then (i, (ty, l))
                else o)
           (unBusShape shape)
-  in b {busShape = shape'}
-setBusChanType _ _ t                                = t
+  in Just b {busShape = shape'}
+setBusChanType _ _ _                                = Nothing
 
 lookupTy ::
      (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
@@ -566,8 +581,8 @@ lookupTy r = do
     getType [rest] ParamDef {..} =
       case paramType of
         ConstPar _ -- TODO: Better error message
-         -> trace "ParamType " $ throw $ UndefinedName r
-        BusPar {..} -> fst <$> lookupBusShape busShape rest
+         -> traceS "ParamType " $ throw $ UndefinedName r
+        BusPar {..} -> fst <$> lookupBusShape parBusShape rest
     getType _ ParamDef {} -- TODO: Better error message
      = traceS "ParamDef" $ throw $ UndefinedName r
     lookupBusShape busShape rest
@@ -587,21 +602,21 @@ newtype BusShape = BusShape
 --type BusShape = M.HashMap Ident (Typeness, Maybe Expr)
 
 data InstParam
-  = InstConstPar Ref
+  = InstConstPar Expr
   | InstBusPar Ref
-  deriving (Show, Eq)
+  deriving (Show, Eq, Data)
 
 data ParamType
   = ConstPar Typeness
-  | BusPar { ref      :: Ref
+  | BusPar { ref         :: Ref
            -- ^ Reference to the bus declaration itself
-           , paramRef :: Ref
+           , paramRef    :: Ref -- FIXME: See note in Simulate: wireInst
            -- ^ The bus reference as provided in the parameter list
-           , localRef :: Ref
+           , localRef    :: Ref
            -- ^ The bus reference used within the instantiated process
-           , busShape :: BusShape
-           , busState :: BusState
-           , array    :: Maybe Integer}
+           , parBusShape :: BusShape
+           , busState    :: BusState
+           , array       :: Maybe Integer}
   deriving (Show, Eq, Data)
 
 data BusVisibility
@@ -666,20 +681,21 @@ instance Located (BaseTopDef a) where
 
 instance Functor BaseEnv where
   fmap f BaseEnv {..} =
-    BaseEnv ((f <$>) <$> defs) curEnv used config (f ext)
+    BaseEnv ((f <$>) <$> defs) curEnv used typeCtx config (f ext)
 
 -- | Top-level type checking environment
 data BaseEnv a = BaseEnv
-  { defs   :: M.HashMap String (BaseTopDef a) -- ^ Top-level symbol table
+  { defs    :: M.HashMap String (BaseTopDef a) -- ^ Top-level symbol table
   --, curEnv :: BaseTopDef a -- ^ Scope of currently used definition
-  , curEnv :: Ident -- TODO: Probably change to Maybe Ref
-  , used   :: S.Set Ident -- ^ Instantiated definitions
-  , config :: Config
-  , ext    :: a
+  , curEnv  :: Ident -- TODO: Probably change to Maybe Ref
+  , used    :: S.Set Ident -- ^ Instantiated definitions
+  , typeCtx :: Maybe Typeness -- TODO: Replace with a reader monad env
+  , config  :: Config
+  , ext     :: a
   } deriving (Show)
 
 mkEnv :: Config -> a -> BaseEnv a
-mkEnv = BaseEnv M.empty (Ident "__noEnv__" noLoc) S.empty
+mkEnv = BaseEnv M.empty (Ident "__noEnv__" noLoc) S.empty Nothing
 
 data Stages
   = ResolveImport
@@ -717,7 +733,7 @@ data Config = Config
   , emulateOverflows   :: Bool
   , runSim             :: Maybe Int
   , traceFile          :: Maybe FilePath
-  , warnings           :: Bool -- ^ Are warnings enabled
+  , noWarnings         :: Bool -- ^ Are warnings disabled
   , params             :: [String] -- [(String, [(String, String)])]
   -- ^ Entity parameters supplied as command line options.
   } deriving (Show)
@@ -736,6 +752,6 @@ mkConfig =
   , emulateOverflows = False
   , runSim = Nothing
   , traceFile = Nothing
-  , warnings = False
+  , noWarnings = False
   , params = []
   }
