@@ -36,7 +36,7 @@ import           SME.Error
 import           SME.Representation
 import           SME.Warning
 
-import           Text.Show.Pretty            (ppShow)
+--import           Text.Show.Pretty            (ppShow)
 
 --import           Debug.Trace                 (trace, traceM)
 trace :: String -> a -> a
@@ -740,35 +740,36 @@ buildEnv df = do
                  (procName, ) <$> (universeBi procDef :: [Instance]))
           topDefs
   params <- inferParamTypes insts
-  trace (ppShow params) $
-    forM_
-      params
+  forM_
+    params
       -- TODO: What to do about newInst here
-      (\(i, t, _newInst) -> do
-         updateTopDef
-           i
-           (\x ->
-              case x of
-                nt@NetworkTable {} -> nt {params = t} :: TopDef
-                pc@ProcessTable {} -> pc {params = t} :: TopDef)
-         forM_
-           t
-           (\(n, param) ->
-              trace
-                ("Added definition " ++
-                 show i ++ " " ++ show n ++ " " ++ show param)
-                addDefinition'
-                i
-                n
-                (ParamDef n param Void)))
+    (\(i, t, _newInst) -> do
+       updateTopDef
+         i
+         (\x ->
+            case x of
+              nt@NetworkTable {} -> nt {params = t} :: TopDef
+              pc@ProcessTable {} -> pc {params = t} :: TopDef)
+       forM_
+         t
+         (\(n, param) ->
+            trace
+              ("Added definition " ++
+               show i ++ " " ++ show n ++ " " ++ show param)
+              addDefinition'
+              i
+              n
+              (ParamDef n param Void)))
   mapUsedTopDefsM_ checkTopDef
 
 -- | Do typechecking of an environment. Return DesignFile with completed type
 -- annoations
 --typeCheck :: (MonadIO m) => DesignFile -> m DesignFile
 -- typeCheck :: DesignFile -> DesignFile
-typeCheck :: DesignFile -> Config -> IO Env
+typeCheck :: DesignFile -> Config -> IO (Env, Warns)
 typeCheck df conf = do
-  let (_, env) =
+  let (res, env) =
         runReprMidentity (mkEnv conf Void) (runWriterT $ unTyM (buildEnv df))
-  return env
+  case res of
+    Left e       -> throwIO e
+    Right (_, l) -> return (env, l)

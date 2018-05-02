@@ -67,17 +67,16 @@ import qualified Data.Vector                     as V
 import           Text.PrettyPrint.Mainland.Class (Pretty (ppr))
 
 
-import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
 import           Language.SMEIL.Util
 import           SME.Error
 
---import           Debug.Trace            (trace, traceM)
-trace :: String -> a -> a
-trace _ = id
+--import           Debug.Trace                     (trace, traceM)
+traceS :: String -> a -> a
+traceS _ = id
 
-traceM :: (Applicative f) => String -> f ()
-traceM _ = pure ()
+traceMS :: (Applicative f) => String -> f ()
+traceMS _ = pure ()
 
 newtype ReprM m s a = ReprM
   { unReprM :: ExceptT TypeCheckErrors (StateT (BaseEnv s) m) a
@@ -100,7 +99,6 @@ runReprM e f = runStateT (runExceptT $ unReprM f) e
 -- | Type checking monad
 class ( Monad m
       , MonadState (BaseEnv s) m
-      -- , MonadWriter Log m
       , MonadError TypeCheckErrors m
       , Extension s
       ) =>
@@ -112,6 +110,7 @@ class ( Monad m
     (_, res) <- lookupDef' r
     return res
   {-# INLINEABLE lookupDef #-}
+
   -- | Looks up a reference returning in a tuple the last part of the reference
   -- (if any) that was not use din looking up the definition, and the definition
   -- that was found.
@@ -119,7 +118,7 @@ class ( Monad m
   lookupDef' r = do
     ti <- curEnvIdent
     go
-      (trace
+      (traceS
          ("Lookup called with " ++ show (refOf r) ++ " context " ++ show ti)
          (refOf r))
     -- Three cases.
@@ -131,7 +130,7 @@ class ( Monad m
     where
       go (i :| []) = do
         d <- getCurEnv
-        traceM ("Symbol table " ++ show (nameOf d))
+        traceMS ("Symbol table " ++ show (nameOf d))
         res <- lookupEx i (symTable d)
         return ([], res)
       go (i :| is) = do
@@ -145,13 +144,13 @@ class ( Monad m
               -- as the preceding pattern match of go matches the case where is is
               -- empty
                ->
-                trace
+                traceS
                   "Got back InstDef "
                   withScope
                   instantiated
                   (go (N.fromList is))
               ParamDef {paramType = BusPar {..}} ->
-                trace "GOt back ParamDef" $
+                traceS "GOt back ParamDef" $
                 case ref of
                   (_ :| []) ->
                     throw $
@@ -161,14 +160,15 @@ class ( Monad m
               -- If first name component doesn't resolve to a possible compound
               -- name in current scope, it probably refers to a top-level
               -- construct, so we look again in that
-               -> trace "lookup recursing" $ withScope i (go (N.fromList is))
+               -> traceS "lookup recursing" $ withScope i (go (N.fromList is))
           Nothing ->
-            trace "lookup recursing2" $ withScope i (go (N.fromList is))
+            traceS "lookup recursing2" $ withScope i (go (N.fromList is))
   {-# INLINEABLE lookupDef' #-}
+
   -- | Looks up a top-level definition
   lookupTopDef :: (References a, Located a, Pretty a) => a -> m (BaseTopDef s)
   lookupTopDef i =
-    go $ trace ("lookupTopDef called with " ++ show (refOf i)) (refOf i)
+    go $ traceS ("lookupTopDef called with " ++ show (refOf i)) (refOf i)
     where
       go (ident :| []) = do
         ds <- gets defs
@@ -179,8 +179,8 @@ class ( Monad m
         -- modules have been renamed by ImportResolver at this point. Therefore,
         -- the use of such a name at this point means that the name refers to a
         -- non-existing entity
-       = trace "lookupTopDef" $ throw $ UndefinedName i
-  --{-# INLINEABLE lookupTopdef #-}
+       = traceS "lookupTopDef" $ throw $ UndefinedName i
+
   -- | Updates a top-level definition 'i', by applying a function 'f' to its
   -- top-level definition.
   updateTopDef ::
@@ -192,6 +192,7 @@ class ( Monad m
     def <- lookupTopDef i
     modify (\x -> x {defs = M.insert (toString (nameOf def)) (f def) (defs x)})
   {-# INLINE updateTopDef #-}
+
   -- | Updates all definitions within the top-level definition 'd', by applying
   -- the function 'f'
   updateDefsM_ ::
@@ -206,6 +207,7 @@ class ( Monad m
         defs = M.elems tab
     res <- mapM f defs
     updateTopDef d (\x -> x {symTable = M.fromList (zip ks res)})
+
   -- | Given a global reference, applies the function to update the definition.
   updateDefM ::
        (References a, Located a, Pretty a)
@@ -223,6 +225,7 @@ class ( Monad m
     updateTopDef
       top
       (\x -> x {symTable = M.insert (toString name) res (symTable x)})
+
   mapDefsM ::
        (References a, Located a, Pretty a)
     => a
@@ -233,12 +236,15 @@ class ( Monad m
     let tab = symTable def
         defs = M.elems tab
     mapM f defs
+
   curEnvIdent :: m Ident
   curEnvIdent = gets curEnv
+
   mapUsedTopDefsM_ :: (BaseTopDef s -> m ()) -> m ()
   -- FIXME: The "used" here is probably a bug as unused top-level entities
   -- should be filtered away by
   mapUsedTopDefsM_ f = void $ mapUsedTopDefsM f
+
   mapUsedTopDefsM :: (BaseTopDef s -> m a) -> m [a]
   mapUsedTopDefsM f = do
     u <- gets used
@@ -282,13 +288,11 @@ class ( Monad m
 
   addUsedEnt :: (Nameable a) => a -> m ()
   addUsedEnt e = modify (\x -> x {used = S.insert (nameOf e) (used x)})
-  --setUsedBus :: Ref -> (Maybe Ident, BusState) -> m ()
 
   setUsedBus :: Ref -> (Ref, BusState) -> m ()
   setUsedBus r s = do
     cur <- gets curEnv
-    traceM ("setUsedbus " ++ show cur ++ " " ++ show r ++ " " ++ show s)
-    --withScope (N.head r)
+    traceMS ("setUsedbus " ++ show cur ++ " " ++ show r ++ " " ++ show s)
     updateCurEnv
       (\case
          p@ProcessTable {usedBuses = usedBuses} ->
@@ -299,11 +303,7 @@ class ( Monad m
   getBusState r =
     M.lookup r . usedBuses <$> getCurEnv >>= \case
       Just s -> pure $ Just $ S.toList s
-      Nothing -> pure Nothing --Unassigned
-  -- addUsedBus :: (References a) => a -> m ()
-  -- addUsedBus r = do
-  --   cur <- gets curBaseEnv
-  --   modify (\x -> x {1
+      Nothing -> pure Nothing
 
   withScope :: (References a, Pretty a, Located a) => a -> m b -> m b
   withScope s act = do
@@ -315,7 +315,7 @@ class ( Monad m
   getCurEnv :: (MonadRepr a m) => m (BaseTopDef a)
   getCurEnv = do
     e <- gets curEnv
-    traceM ("getCurEnv " ++ show e)
+    traceMS ("getCurEnv " ++ show e)
     lookupTopDef e
 
   updateCurEnv :: (MonadRepr a m) => (BaseTopDef a -> BaseTopDef a) -> m ()
@@ -337,7 +337,7 @@ class ( Monad m
   updateDef d f = do
     cur <- gets curEnv
     def <- lookupDef d
-    traceM ("In updateDef: " ++ show (nameOf def)) -- ++ " " ++ show cur)
+    traceMS ("In updateDef: " ++ show (nameOf def)) -- ++ " " ++ show cur)
     let def' = f def
     updateTopDef
       cur
@@ -353,7 +353,7 @@ lookupEx ::
   -> m b
 lookupEx e m = case M.lookup (toString e) m of
   Just r  -> pure r
-  Nothing -> trace "lookupEx" $ throw $ UndefinedName e
+  Nothing -> traceS "lookupEx" $ throw $ UndefinedName e
 
 -- | Tries to look up an element 'i' in map 'm'. Performs action 'a' if
 -- successful and throws an error otherwise
@@ -545,16 +545,16 @@ setBusChanType _ _ t                                = t
 lookupTy ::
      (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
 lookupTy r = do
-  traceM "LookupTy entered"
+  traceMS "LookupTy entered"
   (rest, def) <- lookupDef' r
   res <- setTypeLoc (locOf r) <$> getType rest def
   return $
-    trace ("lookupTy for " ++ show (refOf r) ++ " return " ++ show res) res
+    traceS ("lookupTy for " ++ show (refOf r) ++ " return " ++ show res) res
   where
     getType _ VarDef {..} = pure $ typeOf varDef
     getType _ ConstDef {..} = pure $ typeOf constDef
     getType [rest] BusDef {..} = fst <$> lookupBusShape busShape rest
-    getType _ BusDef {} = trace "throw busdef" $ throw $ BusReferencedAsValue r
+    getType _ BusDef {} = traceS "throw busdef" $ throw $ BusReferencedAsValue r
     getType _ FunDef {} = undefined --pure $ typeOf funcDef
     getType _ EnumDef {..} = throw $ ReferencedAsValue enumDef
     getType _ EnumFieldDef {..} = pure $ typeOf fieldValue
@@ -569,13 +569,13 @@ lookupTy r = do
          -> trace "ParamType " $ throw $ UndefinedName r
         BusPar {..} -> fst <$> lookupBusShape busShape rest
     getType _ ParamDef {} -- TODO: Better error message
-     = trace "ParamDef" $ throw $ UndefinedName r
+     = traceS "ParamDef" $ throw $ UndefinedName r
     lookupBusShape busShape rest
       -- TODO: Maybe use a map for busShape
      =
       case lookup rest (unBusShape busShape) of
         Just a  -> pure a
-        Nothing -> trace "lookupBusShape" $ throw $ UndefinedName r
+        Nothing -> traceS "lookupBusShape" $ throw $ UndefinedName r
 
 
 

@@ -36,8 +36,6 @@ import qualified Data.List.NonEmpty                as N
 import           Data.Maybe                        (catMaybes, fromMaybe,
                                                     mapMaybe)
 
---import           Control.Concurrent.Async          (async, mapConcurrently,
-                                                    --wait)
 import           Control.Monad.Except              (MonadError)
 import           Control.Monad.Extra               (concatForM, concatMapM,
                                                     mapMaybeM, unlessM)
@@ -61,13 +59,13 @@ import           SME.CsvWriter
 import           SME.Error
 import           SME.Representation
 
-import           Debug.Trace
+--import           Debug.Trace
 --import           Text.Show.Pretty                  (ppShow)
--- trace :: String -> a -> a
--- trace _ = id
+trace :: String -> a -> a
+trace _ = id
 
--- traceM :: (Applicative f) => String -> f ()
--- traceM _ = pure ()
+traceM :: (Applicative f) => String -> f ()
+traceM _ = pure ()
 
 
 -- import SME.APITypes
@@ -308,7 +306,7 @@ evalExpr PrimName {..} =
   getValueVtab name
 evalExpr PrimLit {..} =
   pure $ toValue lit
-evalExpr Parens {..} = evalExpr expr
+evalExpr Parens {..} = evalExpr innerExpr
 evalExpr _ = error "Function calls not implemented yet"
 
 -- TODO: Find a better way of doing this
@@ -388,14 +386,13 @@ propagateBus BusInst {..}
             --traceM ("Bus looks like " ++ show name)
           do
            rw <- readIORef writeRef
-           rv <- readIORef readRef
+           --rv <- readIORef readRef
            writeIORef readRef rw
-           putStrLn ("Bus read value was " ++ show rv)
+           --putStrLn ("Bus read value was " ++ show rv)
            return rw
        ExternalChan {extRead = readEnd}
           -- External channels are propagated by the c-wrapper
         -> liftIO $ peek readEnd)
---{-# INLINE propagateBus #-}
 
 
 -- | Returns a new and globally unique integer every time its called.
@@ -1001,17 +998,9 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
       return $ procInst {valueTab = vtab'}
     _ -> throw $ InternalCompilerError "Expected instDef"
 
--- We may use this later
--- instsToMap :: [ProcInst] -> M.HashMap Int ProcInst
--- instsToMap = foldr (\p@ProcInst {..} m -> M.insert instNodeId p m) M.empty
-
 -- | Sets up the simulation sets up the simulation environment
 setupSimEnv :: Maybe SmeCtxPtr -> SimM ()
 setupSimEnv ptr = do
-  csv <-
-    getConfig traceFile >>= \case
-      Just a -> liftIO (Just <$> mkCsvWriter a)
-      Nothing -> pure Nothing
   --"trace.csv"
   --csv <- Nothing
   modify
