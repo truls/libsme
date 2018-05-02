@@ -260,16 +260,6 @@ checkExpr Binary {..} = do
   (t1, e1) <- checkExpr left
   (t2, e2) <- checkExpr right
   t' <- unifyTypes Nothing t1 t2
-  -- let shouldBe =
-  --       case binOp of
-  --         DisOp l -> Just $ Typed (Bool l)
-  --         ConOp l -> Just $ Typed (Bool l)
-  --         EqOp l  -> Nothing
-  --         OrOp l  -> Just $ Typed (
-  --         LtOp l  -> Typed (Bool l)
-  --         GtOp l  -> Typed (Bool l)
-  --         LeqOp l -> Typed (Bool l)
-  --         GeqOp l -> Typed (Bool l)
 
   let retTy =
         case binOp of
