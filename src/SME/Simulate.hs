@@ -1188,13 +1188,17 @@ chanMaxVal ExternalChan {..} = (name, ) <$> readIORef maxBusVal
 
 updateBusTypes :: [BusInst] -> SimM ()
 updateBusTypes bs = do
+  noStrict <- getConfig noStrictSizeBounds
   maxvals <- liftIO $ chanValList bs
   maxtypes <-
     forM
       maxvals
       (\((r, i), v) -> do
          t <- withScope (N.head r) $ lookupTy (r <> refOf i)
-         let t' = valueToType v t
+         let t' =
+               if noStrict || isUnsized t
+                 then valueToType v t
+                 else t
          return ((r, i), t'))
   forM_
     maxtypes
@@ -1214,13 +1218,17 @@ varValList ps =
 
 updateVarTypes :: [ProcInst] -> SimM ()
 updateVarTypes ps = do
+  noStrict <- getConfig noStrictSizeBounds
   let maxvals = varValList ps
   maxtypes <-
     forM
       maxvals
       (\(r, v) -> do
          t <- withScope (N.head r) $ lookupTy r
-         let t' = valueToType v t
+         let t' =
+               if noStrict || isUnsized t
+                 then valueToType v t
+                 else t
          return (r, t'))
   forM_ maxtypes $ \(r, t) -> withScope (N.head r) $ updateDef r (setType t)
 
