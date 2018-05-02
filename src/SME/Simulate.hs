@@ -1061,12 +1061,27 @@ runSimulation procs buses = do
 
 --setupIncrSimulation :: Env ->
 
+initSimEnv :: Env -> SmeCtxPtr -> IO (Either TypeCheckErrors SimEnv)
+initSimEnv env ptr = runStep (toSimEnv env) $  setupSimEnv (Just ptr)
+
 newSteppingSim :: Env -> SmeCtxPtr -> IO (Either TypeCheckErrors SimEnv)
-newSteppingSim env ptr = runStep (toSimEnv env) $ setupSimEnv (Just ptr)
+newSteppingSim env ptr =
+  runStep (toSimEnv env) $ do
+    setupSimEnv (Just ptr)
+    csv <-
+      getConfig traceFile >>= \case
+        Just a -> liftIO (Just <$> mkCsvWriter a)
+        Nothing -> pure Nothing
+    modify
+      (\x ->
+         let ee = envExt x
+         in x {ext = ee {csvWriter = csv}} :: SimEnv)
+    writeCsvHeader
+
 
 runStep :: SimEnv -> SimM () -> IO (Either TypeCheckErrors SimEnv)
 runStep env act = do
-  (res, env') <- runReprM env (unSimM act)
+  (res, env') <- runReprM env (runReaderT (unSimM act) mkContext)
   return $
     case res of
       Right () -> Right env'

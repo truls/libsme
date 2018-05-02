@@ -7,6 +7,7 @@ module SME.API
   ) where
 
 import           Control.Exception     (try, tryJust)
+import           Control.Monad         (unless)
 import           Foreign               (Ptr)
 import           Foreign.C.String      (CString, peekCString, withCString)
 import           Foreign.Marshal.Array (peekArray)
@@ -16,8 +17,6 @@ import           Foreign.StablePtr     (StablePtr, deRefStablePtr,
 import qualified Data.Text.IO          as T
 import           Options.Applicative   (ParserResult (..), defaultPrefs,
                                         execParserPure, info)
-
-import           Text.Show.Pretty      (ppShow)
 
 import           Language.SMEIL.Pretty
 import           SME.API.Internal
@@ -30,10 +29,10 @@ import           SME.Simulate
 import           SME.Stages
 import           SME.TypeCheck
 
-import           Debug.Trace
+--import           Debug.Trace
 
--- trace :: String -> a -> a
--- trace _ = id
+trace :: String -> a -> a
+trace _ = id
 
 -- traceM :: (Applicative f) => String -> f ()
 -- traceM _ = pure ()
@@ -73,6 +72,8 @@ data ApiCtx = ApiCtx
 setError :: SmeCtxPtr -> String -> IO ()
 setError ptr e = withCString e (sme_set_error ptr)
 
+
+
 loadFile :: SmeCtxPtr -> CString -> Int -> CStringArray -> IO Bool
 loadFile c f n arr = do
   args <- mapM peekCString =<< peekArray n arr
@@ -97,14 +98,15 @@ loadFile c f n arr = do
               trace "first res left" $
               setError c (renderError nameMap (e :: TypeCheckErrors)) >>
               return False
-            Right r ->
-              trace "first res right" $
+            Right (r, w) -> do
+              unless (noWarnings conf) (printWarnings w)
               newSteppingSim r c >>= \case
                 Left e ->
                   trace "second res lefft" $
                   setError c (renderError nameMap e) >> return False
                 Right r' ->
                   trace "second res right" $ do
+                    --putStrLn (ppShow (defs (Void <$ r')))
                     ptr <-
                       newStablePtr
                         ApiCtx
@@ -165,14 +167,25 @@ runTypeCheck :: SimCtxPtr -> IO Bool
 runTypeCheck c = do
   ctx <- deRefStablePtr c
   freeStablePtr c
+  let conf = apiConf ctx
   res <- try (typeCheck (reconstruct (Void <$ simState ctx)) (apiConf ctx))
   case res of
     Left e -> do
       setError (libCtx ctx) (errorRenderer ctx (e :: TypeCheckErrors))
       return False
-    Right r -> do
-      sme_set_sim_state (libCtx ctx) =<< newStablePtr ctx {tyState = r}
-      return True
+    Right (r, w)
+      -- FIXME: This really shouldn't be needed. We do it to set the toplevel
+      -- attribute.
+     -> do
+      unless (noWarnings conf) (printWarnings w)
+      initSimEnv r (libCtx ctx) >>= \case
+        Left e ->
+          trace "second res lefft" $
+          setError (libCtx ctx) (errorRenderer ctx e) >> return False
+        Right r' -> do
+          sme_set_sim_state (libCtx ctx) =<<
+            newStablePtr ctx {tyState = Void <$ r'}
+          return True
 
 finalize :: SimCtxPtr -> IO Bool
 finalize c
