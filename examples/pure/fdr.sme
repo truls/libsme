@@ -16,7 +16,7 @@ proc fun (in fun_in)
 
 proc sink (in sink_in)
 {
-    assert (sink_in.val > 10);
+    assert (sink_in.val < 100);
     trace ("Value was {}", sink_in.val);
 }
 

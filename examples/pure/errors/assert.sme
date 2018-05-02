@@ -1,0 +1,9 @@
+proc test ()
+    const c: int = 0;
+{
+    assert(c == 1);
+}
+
+network i () {
+    instance _ of test ();
+}

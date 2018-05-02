@@ -53,11 +53,13 @@ proc plusone(in inbus, const val)
     bus plusout {
        val: i32;
     };
-    const one: i2 = 2;
-    var two: i2 = 2;
+    const one: int = 2;
+    var two: int = 2;
 {
-    two = two + val;
-    plusout.val = two; //inbus.val + two;
+    two = two + inbus.val;
+    plusout.val = two;
+    trace("Wrote value {}", two);
+
 }
 
 network plusone_net() {

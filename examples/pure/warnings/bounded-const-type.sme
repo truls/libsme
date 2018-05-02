@@ -1,0 +1,10 @@
+proc test ()
+    const c: i1 = 0;
+{
+    trace ("{}", c);
+}
+
+network i () {
+    const b: i32 = 0;
+    instance _ of test ();
+}

@@ -1,0 +1,8 @@
+proc test ()
+{
+    trace ("{} {}", foo);
+}
+
+network i () {
+    instance _ of test ();
+}

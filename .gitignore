@@ -4,3 +4,4 @@ libsme.cabal
 lib/
 output/
 .ropeproject/
+trace.csv

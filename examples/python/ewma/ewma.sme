@@ -47,11 +47,11 @@ sync proc merge (in long, in short, out res) {
 network ewma () {
     //const decays: [2]i2 = [2, 3];
 
-    const decay1: i32 = 2;
-    const decay2: i32 = 3;
+    const decay1: int = 2;
+    const decay2: int = 3;
 
     exposed bus stream {
-        val: i43;
+        val: i9;
         valid: bool;
     };
 
