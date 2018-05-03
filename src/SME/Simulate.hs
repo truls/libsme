@@ -491,7 +491,7 @@ instance ToValue Value where
 -- is signed
 valueToType :: Value -> Typeness -> Typeness
 valueToType (IntVal v) (Typed Signed {..})   =
-  Typed $ Signed (Just (bitSize v)) loc
+  Typed $ Signed (Just (bitSize v + 1)) loc
 valueToType (IntVal v) (Typed Unsigned {..}) =
   Typed $ Unsigned (Just (bitSize v)) loc
 valueToType v (Typed Array {arrLength = al, innerTy = iTy}) =
