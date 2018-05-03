@@ -24,6 +24,8 @@ import           Language.SMEIL.Syntax (Nameable (..), Ref, ToString (..),
                                         Typeness (..))
 import           SME.Util
 
+import           Text.Show.Pretty      (ppShow)
+
 type NameMap = M.Map String Ref
 
 newtype CompilerError =
@@ -129,7 +131,7 @@ instance Show TypeCheckErrors where
   show (BusShapeMismatch expected actual inst) =
     "Unable to unify bus shapes in instantiation at " ++
     displayLoc' inst ++
-    " expected: " ++ show expected ++ " but saw " ++ show actual ++ "."
+    " expected: \b" ++ ppShow expected ++ "\n\nbut saw\n\n" ++ ppShow actual ++ "."
   show (InstanceParamTypeMismatch inst) =
     "Wrong parameter type (bus parameter where a constant is" ++
     " expected or vice-versa) in instantiation at " ++ displayLoc' inst
