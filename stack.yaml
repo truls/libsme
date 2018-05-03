@@ -41,7 +41,7 @@ packages:
 # (e.g., acme-missiles-0.3)
 extra-deps:
   - git: https://github.com/truls/language-vhdl-quote
-    commit: 9006aee774e1262a87e472783d74f140711244d8
+    commit: f0e0ca2ff23a99d0d562db976da58869b6b300eb
   - mainland-pretty-0.7
   - srcloc-0.5.1.2
 
@@ -71,3 +71,4 @@ extra-deps:
 #
 # Allow a newer minor version of GHC than the snapshot specifies
 # compiler-check: newer-minor
+allow-newer: true
