@@ -31,5 +31,5 @@ main = do
     Nothing -> return ()
   compile opts `catch`
     (\(CompilerError e) -> do
-       hPutStr stderr (show e)
+       hPutStr stderr e
        exitFailure)
