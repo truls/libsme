@@ -677,10 +677,11 @@ unifyProcParam (_, ps1) (inst, ps2) = do
       --trace ("Unified ( " ++ show i1 ++ " types " ++ show t1 ++ " and " ++
       --show t2 ++ " yielding " ++ show res) $
       return (i1, ConstPar res)
-    go (i1, t1@BusPar {}) (_, t2@BusPar {})
+    go (i1, t1@BusPar {parBusShape = bs1}) (_, BusPar {parBusShape = bs2})
       --trace ("Comparing " ++ show t1 ++ " and " ++ show t2) $
      =
-      unless (t1 == t2) (throw $ BusShapeMismatch t1 t2 inst) >> return (i1, t1)
+      unless (bs1 == bs2) (throw $ BusShapeMismatch bs1 bs2 inst) >>
+      return (i1, t1)
     go _ _ = throw $ InstanceParamTypeMismatch inst
 
 -- TODO: Set the param attribute of instances to something reasonable.
