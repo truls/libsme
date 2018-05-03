@@ -528,7 +528,7 @@ mkBusInst exposed n bs busRef = do
       forM
         (unBusShape bs')
         (\case
-           (i, (oTy@(Typed ty), lit)) -> do
+           (i, (oTy@(Typed ty), lit, _)) -> do
              defVal <- genDefaultValue lit oTy
              (i, ) <$>
                if isPuppet
@@ -544,7 +544,7 @@ mkBusInst exposed n bs busRef = do
     toBusChans :: BusShape -> SimM [(Ident, BusChan)]
     toBusChans bs' =
       mapM
-        (\(i, (ty, lit)) -> do
+        (\(i, (ty, lit, _)) -> do
            defVal <- genDefaultValue lit ty
            (i, ) <$>
              liftIO
@@ -1189,6 +1189,7 @@ applyTypes = do
   updateBusTypes buses
   return ()
 
+
 chanValList :: [BusInst] -> IO [((Ref, Ident), Value)]
 chanValList b =
   maxInGroup . sortBy (\(x, _) (y, _) -> compare x y) <$> concatMapM go b
@@ -1226,14 +1227,22 @@ updateBusTypes bs = do
       maxvals
       (\((r, i), v) -> do
          t <- withScope (N.head r) $ lookupTy (r <> refOf i)
-         let t' =
+         rn' <- getRangeLit v
+         let (t', rn'') =
                if noStrict || isUnsized t
-                 then valueToType v t
-                 else t
-         return ((r, i), t'))
+                 then (valueToType v t, rn')
+                 else (t, Nothing)
+         return ((r, i), (t', rn'')))
   forM_
     maxtypes
-    (\((r, i), t) -> withScope (N.head r) $ updateDef r (setBusChanType i t))
+    (\((r, i), (t, rn)) ->
+       withScope (N.head r) $ updateDef r (setBusChanType i rn t))
+
+getRangeLit :: Value -> SimM (Maybe Value)
+getRangeLit v =
+  getConfig noRangeAnnot >>= \case
+    False -> pure (Just v)
+    True -> pure Nothing
 
 
 varValList :: [ProcInst] -> [(Ref, Value)]
@@ -1256,12 +1265,14 @@ updateVarTypes ps = do
       maxvals
       (\(r, v) -> do
          t <- withScope (N.head r) $ lookupTy r
+         r' <- getRangeLit v
          let t' =
                if noStrict || isUnsized t
-                 then valueToType v t
-                 else t
+                 then (valueToType v t, r')
+                 else (t, Nothing)
          return (r, t'))
-  forM_ maxtypes $ \(r, t) -> withScope (N.head r) $ updateDef r (setType t)
+  forM_ maxtypes $ \(r, (t, r')) ->
+    withScope (N.head r) $ updateDef r (setType t r')
 
 
 

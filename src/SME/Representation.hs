@@ -44,6 +44,7 @@ module SME.Representation
   , Stages(..)
   , mkConfig
   , InstParam(..)
+  , valueToLit
   ) where
 
 import           Control.Exception               (throw)
@@ -71,6 +72,7 @@ import           Text.PrettyPrint.Mainland.Class (Pretty (ppr))
 import           Language.SMEIL.Syntax
 import           Language.SMEIL.Util
 import           SME.Error
+import           SME.Util
 
 --import           Debug.Trace                     (trace, traceM)
 traceS :: String -> a -> a
@@ -444,6 +446,14 @@ instance Pretty Value where
   ppr (DoubleVal d)  = ppr d
   ppr (SingleVal s)  = ppr s
 
+valueToLit :: Value -> Literal
+valueToLit (IntVal i)      = LitInt i noLoc
+valueToLit (DoubleVal i)   = LitFloat (realToFrac i) noLoc
+valueToLit (SingleVal i)   = LitFloat (realToFrac i) noLoc
+valueToLit (BoolVal True)  = LitTrue noLoc
+valueToLit (BoolVal False) = LitFalse noLoc
+valueToLit ArrayVal {}     = undefined
+
 -- | For values that are instance of Num, runs abs on the value. Returns the
 -- identity otherwise
 absValue :: Value -> Value
@@ -540,22 +550,27 @@ instance Nameable (BaseDefType a) where
   nameOf ParamDef {..}     = paramName
 
 -- | Sets the type of a definition when possible
-setType :: Typeness -> BaseDefType a -> Maybe (BaseDefType a)
-setType t d@VarDef {varDef = v@Variable {}} = Just $ d {varDef = v {ty = t}}
-setType _ _                                 = Nothing
+setType :: Typeness -> Maybe Value -> BaseDefType a -> Maybe (BaseDefType a)
+setType t val d@VarDef {varDef = v@Variable {}} =
+  let range' = mkRange $ valueToLit <$> val
+  in Just $ d {varDef = v {ty = t, range = range'}}
+setType _ _ _ = Nothing
 
-setBusChanType :: Ident -> Typeness -> BaseDefType a -> Maybe (BaseDefType a)
-setBusChanType ident ty b@BusDef {busShape = shape} =
+-- TODO (maybe): If we alter the bus definition AST directly here, we don't have
+-- to pass around the range in the BusShape
+setBusChanType ::
+     Ident -> Maybe Value -> Typeness -> BaseDefType a -> Maybe (BaseDefType a)
+setBusChanType ident range ty b@BusDef {busShape = shape} =
   let shape' =
         BusShape $
         map
-          (\o@(i, (_, l)) ->
+          (\o@(i, (_, l, _)) ->
              if ident == i
-               then (i, (ty, l))
+               then (i, (ty, l, valueToLit <$> range))
                else o)
           (unBusShape shape)
   in Just b {busShape = shape'}
-setBusChanType _ _ _                                = Nothing
+setBusChanType _ _ _ _                                = Nothing
 
 lookupTy ::
      (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
@@ -568,7 +583,7 @@ lookupTy r = do
   where
     getType _ VarDef {..} = pure $ typeOf varDef
     getType _ ConstDef {..} = pure $ typeOf constDef
-    getType [rest] BusDef {..} = fst <$> lookupBusShape busShape rest
+    getType [rest] BusDef {..} = fst3 <$> lookupBusShape busShape rest
     getType _ BusDef {} = traceS "throw busdef" $ throw $ BusReferencedAsValue r
     getType _ FunDef {} = undefined --pure $ typeOf funcDef
     getType _ EnumDef {..} = throw $ ReferencedAsValue enumDef
@@ -582,7 +597,7 @@ lookupTy r = do
       case paramType of
         ConstPar _ -- TODO: Better error message
          -> traceS "ParamType " $ throw $ UndefinedName r
-        BusPar {..} -> fst <$> lookupBusShape parBusShape rest
+        BusPar {..} -> fst3 <$> lookupBusShape parBusShape rest
     getType _ ParamDef {} -- TODO: Better error message
      = traceS "ParamDef" $ throw $ UndefinedName r
     lookupBusShape busShape rest
@@ -593,11 +608,16 @@ lookupTy r = do
         Nothing -> traceS "lookupBusShape" $ throw $ UndefinedName r
 
 
-
 -- TODO: Maybe change this to a map
 newtype BusShape = BusShape
-  { unBusShape :: [(Ident, (Typeness, Maybe Literal))]
-  } deriving (Eq, Show, Data)
+  -- Tuple is, type, default val, range
+  { unBusShape :: [(Ident, (Typeness, Maybe Literal, Maybe Literal))]
+  } deriving (Show, Data)
+
+instance Eq BusShape where
+  a == b = dropRange a == dropRange b
+    where
+      dropRange = map (\(x, (y, z, _)) -> (x, y, z)) . unBusShape
 
 --type BusShape = M.HashMap Ident (Typeness, Maybe Expr)
 
@@ -734,6 +754,7 @@ data Config = Config
   , runSim             :: Maybe Int
   , traceFile          :: Maybe FilePath
   , noWarnings         :: Bool -- ^ Are warnings disabled
+  , noRangeAnnot       :: Bool
   , params             :: [String] -- [(String, [(String, String)])]
   -- ^ Entity parameters supplied as command line options.
   } deriving (Show)
@@ -753,5 +774,6 @@ mkConfig =
   , runSim = Nothing
   , traceFile = Nothing
   , noWarnings = False
+  , noRangeAnnot = False
   , params = []
   }

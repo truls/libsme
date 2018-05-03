@@ -636,7 +636,11 @@ busToShape Bus {signals = signals} = BusShape <$> mapM go signals
       val <- case value of
         Just e  -> Just <$> exprReduceToLiteral e
         Nothing -> pure Nothing
-      return (name, (ty, val))
+      range' <- case range of
+        -- TODO: Don't ignore lower range
+        Just (Range _ u _) -> Just <$> exprReduceToLiteral u
+        Nothing            -> pure Nothing
+      return (name, (ty, val, range'))
 
 -- | Group a list of tuples by its first input. Turns [(a, b)] into (a, [b]) for
 -- running sequences of identical a's

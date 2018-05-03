@@ -304,7 +304,7 @@ genPorts pt@ProcessTable {..} =
          BusDef {busShape = BusShape bs} ->
            forM
              bs
-             (\(sigName, (sigTy, sigVal)) ->
+             (\(sigName, (sigTy, sigVal, _)) ->
                 let n = genIdents $ N.toList refAs <> [sigName]
                       -- case refAs of
                       --   Just a  -> genIdents [a, sigName]
@@ -753,7 +753,7 @@ genInstSignals dt = genInstSignals' =<< getUsedBusesOfInsts dt
         go (Nothing, ref, shape) =
           forM
             (unBusShape shape)
-            (\(sigName, (ty, l)) -> do
+            (\(sigName, (ty, l, _)) -> do
                let n = genIdents $ N.toList ref <> [sigName]
                dval <- genDefaultExpr l ty
                return $
@@ -762,6 +762,8 @@ genInstSignals dt = genInstSignals' =<< getUsedBusesOfInsts dt
                           $subtyind:(genType ty) := $expr:dval;|])
         go _ = return []
 
+-- TODO: Now that we have ranges in busShapes, we can also render ranges in the
+-- generated VHDL
 
 -- | Generates external entity signals from exposed buses
 genExtPorts :: [DefType] -> GenM [V.InterfaceDeclaration]
@@ -774,7 +776,7 @@ genExtPorts dt = genExtPorts' =<< getUsedBusesOfInsts dt
         go (Just mode, ref, shape) =
           forM
             (unBusShape shape)
-            (\(sigName, (ty, l)) ->
+            (\(sigName, (ty, l, _))  ->
                let n = genIdents $ N.toList ref <> [sigName]
                in case mode of
                     Input ->
@@ -807,7 +809,7 @@ genTBWires' l =
   where
     go (Just mode, ref, shape) =
       map
-        (\(sigName, (ty, _)) ->
+        (\(sigName, (ty, _, _)) ->
            let n = genIdents $ N.toList ref <> [sigName]
            in (mode, n, ty))
         (unBusShape shape)
@@ -821,7 +823,7 @@ genTBWires' l =
 genPortMap :: Ref -> Ref -> BusShape -> [V.AssociationElement]
 genPortMap busName localRef = map go . unBusShape
   where
-    go (sigName, (_, _)) =
+    go (sigName, (_, _, _)) =
       let theirName = genIdents $ N.toList localRef <> [sigName]
           myName = genIdents $ N.toList (busName <> refOf sigName)
       in [assocel|$ident:theirName => $ident:myName|]

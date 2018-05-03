@@ -89,6 +89,7 @@ optParser p =
     (strOption
        (long "trace" <> short 't' <> help "Where to write the trace file")) <*>
   switch (long "no-warnings" <> short 'w' <> help "Disable warnings") <*>
+  switch (long "no-range-annot" <> help "Disable warnings") <*>
   many
     (strOption
        (long "param" <> short 'p' <>

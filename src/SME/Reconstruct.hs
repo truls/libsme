@@ -11,6 +11,7 @@ import           Data.Maybe            (mapMaybe)
 
 import           Language.SMEIL.Syntax
 import           SME.Representation
+import           SME.Util
 
 type Env = BaseEnv Void
 type TopDef = BaseTopDef Void
@@ -20,8 +21,9 @@ reBusDef :: Bool -> Bus -> Ident -> BusShape -> Bus
 reBusDef isExposed busDef busName busShape =
   Bus isExposed (unique busDef) busName (map mkChan (unBusShape busShape)) noLoc
   where
-    mkChan (n, (ty, lit)) =
-      BusSignal n ty ((\x -> PrimLit ty x noLoc) <$> lit) Nothing noLoc
+    mkChan (n, (ty, lit, range)) =
+      BusSignal n ty ((\x -> PrimLit ty x noLoc) <$> lit) (mkRange range) noLoc
+
 
 reDefTypeNet :: [DefType] -> [NetworkDecl]
 reDefTypeNet = mapMaybe go
@@ -31,6 +33,7 @@ reDefTypeNet = mapMaybe go
     go InstDef {..} = Just $ NetInst instDef
     go _ = Nothing
 
+
 reDefTypeProc :: [DefType] -> [Declaration]
 reDefTypeProc = mapMaybe go
   where
@@ -39,6 +42,7 @@ reDefTypeProc = mapMaybe go
     go BusDef {..} = Just $ BusDecl $ reBusDef isExposed busDef busName busShape
     go InstDef {..} = Just $ InstDecl instDef
     go _ = Nothing
+
 
 reTopDef :: TopDef -> UnitElement
 -- TODO: Params
