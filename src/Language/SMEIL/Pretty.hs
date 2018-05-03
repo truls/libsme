@@ -162,7 +162,7 @@ instance Pretty Statement where
   ppr (Trace s p _) =
     text "trace" <> parens (ppr s <> comma <+> commasep (map ppr p)) <> semi
   ppr (Assert s p _) =
-    text "trace" <> parens (ppr (catR (comma <> space) s) <> ppr p) <> semi
+    text "assert" <> parens (ppr (catR (comma <> space) s) <> ppr p) <> semi
 
 instance Pretty Enumeration where
   ppr (Enumeration _ n fs _) =
