@@ -773,7 +773,6 @@ inferParamTypes insts = do
         ( ( forName
           , BusPar
             { ref = busRef bDef
-            , paramRef = refOf locRef
             , localRef = refOf forName
             , parBusShape = shape
             , busState = dir

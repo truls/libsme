@@ -994,29 +994,37 @@ mkInst InstDef { instantiated = instantiated
   instParent $ Just . (instName, ) <$> instEntity (M.fromList paramVals) inst
 mkInst _ = pure Nothing
 
+-- TODO: Handle parameters in the type check somehow
+-- | Reduce an expression to a name and fail if impossible
+exprReduceToName :: (MonadRepr s m) => Expr -> m Name
+exprReduceToName PrimName {..} = return name
+exprReduceToName e             = throw $ ExprInvalidInContext e
+
 -- | Adds actual bus references to the vtable of a process instance
 wireInst :: (Ident, ProcInst) -> SimM ProcInst
-wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId}) =
+wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId})
   --traceM "Entered wireInst"
+ =
   lookupDef instDefName >>= \case
-    InstDef { instantiated = instantiated
-            , instDef = Instance {params = actual}} -> do
+    InstDef {instantiated = instantiated, instDef = Instance {params = actual}} -> do
       inst <- lookupTopDef instantiated
       let parList = (params :: TopDef -> ParamList) inst
       paramVals <-
         catMaybes <$>
         zipWithM
-          (\(parName, parType) (_, _parVal) ->
+          (\(parName, parType) (_, parVal) ->
              case parType of
                ConstPar _ -> pure Nothing
-               BusPar {..} -> do
+               BusPar {..}
                  -- FIXME: This is probably completely bogus since paramRef
                  -- contains a reference used when instantiating the bus. This
                  -- has no business hanging around in the process definition.
-                 (nid, ref') <- resolveBusParam paramRef
+                -> do
+                 (nid, ref') <-
+                   resolveBusParam =<< refOf <$> exprReduceToName parVal
                  case busState of
                    Input -> addLink (ProcLink (myNodeId, nid, "foo", ref'))
-                   Output -> addLink (ProcLink  (nid, myNodeId, "foo", ref'))
+                   Output -> addLink (ProcLink (nid, myNodeId, "foo", ref'))
                    _ -> throw $ InternalCompilerError "BusState invalid here"
                  return $ Just (parName, BusVal ref'))
           parList

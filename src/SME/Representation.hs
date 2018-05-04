@@ -630,8 +630,6 @@ data ParamType
   = ConstPar Typeness
   | BusPar { ref         :: Ref
            -- ^ Reference to the bus declaration itself
-           , paramRef    :: Ref -- FIXME: See note in Simulate: wireInst
-           -- ^ The bus reference as provided in the parameter list
            , localRef    :: Ref
            -- ^ The bus reference used within the instantiated process
            , parBusShape :: BusShape
