@@ -1,0 +1,9 @@
+proc test ()
+    const c: int = 0;
+{
+    assert("Assertion failed!");
+}
+
+network i () {
+    instance _ of test ();
+}
