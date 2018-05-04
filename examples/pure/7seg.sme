@@ -1,0 +1,121 @@
+proc timer ()
+    bus elapsed {
+        secs: uint;
+    };
+    const secs_per_day: uint = 86400;
+    var cur: u17;
+{
+    cur = (cur + 1) % secs_per_day;
+    elapsed.secs = cur;
+}
+
+proc hrs (in time)
+    bus vals {
+        d1: uint;
+        d2: uint;
+    };
+    const secs_per_hr: uint = 3600;
+    var cur: uint;
+{
+    cur = time.secs/secs_per_hr;
+    vals.d1 = cur/10;
+    vals.d2 = cur%10;
+}
+
+proc mins (in time)
+    bus vals {
+        d1: uint;
+        d2: uint;
+    };
+    const secs_per_min: uint = 60;
+    var cur: uint;
+{
+    cur = time.secs / secs_per_min % secs_per_min;
+    vals.d1 = cur/10;
+    vals.d2 = cur%10;
+}
+
+proc secs (in time)
+    bus vals {
+        d1: uint;
+        d2: uint;
+    };
+    var cur: uint;
+{
+    cur = time.secs % 60;
+    vals.d1 = cur/10;
+    vals.d2 = cur%10;
+}
+
+proc encode (in inval)
+    bus vals {
+        d1: uint;
+        d2: uint;
+    };
+    const digits: [10]uint =
+        [0x7E, 0x30, 0x6D,
+         0x79, 0x33, 0x5B,
+         0x5F, 0x70, 0x7F,
+         0x7B];
+{
+    vals.d1 = digits[inval.d1];
+    vals.d2 = digits[inval.d2];
+}
+
+proc decode (in inval)
+    bus vals {
+        d1: uint;
+        d2: uint;
+    };
+{
+    switch inval.d1 {
+        case 0 {vals.d1 = 0; }
+        case 0x7E { vals.d1 = 0;}
+        case 0x30 { vals.d1 = 1;}
+        case 0x6D { vals.d1 = 2;}
+        case 0x79 { vals.d1 = 3;}
+        case 0x33 { vals.d1 = 4;}
+        case 0x5B { vals.d1 = 5;}
+        case 0x5F { vals.d1 = 6;}
+        case 0x70 { vals.d1 = 7;}
+        case 0x7F { vals.d1 = 8;}
+        case 0x7B { vals.d1 = 9;}
+        default { trace("Value was{}", inval.d1);
+            assert(false); }
+    }
+    switch inval.d2 {
+        case 0 {vals.d2 = 0;}
+        case 0x7E { vals.d2 = 0;}
+        case 0x30 { vals.d2 = 1;}
+        case 0x6D { vals.d2 = 2;}
+        case 0x79 { vals.d2 = 3;}
+        case 0x33 { vals.d2 = 4;}
+        case 0x5B { vals.d2 = 5;}
+        case 0x5F { vals.d2 = 6;}
+        case 0x70 { vals.d2 = 7;}
+        case 0x7F { vals.d2 = 8;}
+        case 0x7B { vals.d2 = 9;}
+        default { assert(false); }
+    }
+}
+
+proc disp (in val1, in val2, in val3) {
+    trace("{}{}:{}{}:{}{}",
+        val1.d1, val1.d2,
+        val2.d1, val2.d2,
+        val3.d1, val3.d2);
+}
+
+network clock() {
+    instance t of timer();
+    instance h of hrs(t.elapsed);
+    instance m of mins(t.elapsed);
+    instance s of secs(t.elapsed);
+    instance ench of encode(h.vals);
+    instance encm of encode(m.vals);
+    instance encs of encode(s.vals);
+    instance dech of decode(ench.vals);
+    instance decm of decode(encm.vals);
+    instance decs of decode(encs.vals);
+    instance _ of disp(dech.vals, decm.vals, decs.vals);
+}

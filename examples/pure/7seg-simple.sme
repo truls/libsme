@@ -1,0 +1,63 @@
+proc timer ()
+    bus elapsed {
+        secs: uint;
+    };
+    const secs_per_day: uint = 86400;
+    var cur: u17;
+{
+    cur = (cur + 1) % secs_per_day;
+    elapsed.secs = cur;
+}
+
+proc hrs (in time)
+    bus vals {
+        d1: uint;
+        d2: uint;
+    };
+    const secs_per_hr: uint = 3600;
+    var cur: uint;
+{
+    cur = time.secs/secs_per_hr;
+    vals.d1 = cur/10;
+    vals.d2 = cur%10;
+}
+
+proc mins (in time)
+    bus vals {
+        d1: uint;
+        d2: uint;
+    };
+    const secs_per_min: uint = 60;
+    var cur: uint;
+{
+    cur = time.secs / secs_per_min % secs_per_min;
+    vals.d1 = cur/10;
+    vals.d2 = cur%10;
+}
+
+proc secs (in time)
+    bus vals {
+        d1: uint;
+        d2: uint;
+    };
+    var cur: uint;
+{
+    cur = time.secs % 60;
+    vals.d1 = cur/10;
+    vals.d2 = cur%10;
+}
+
+proc disp (in val1, in val2, in val3) {
+    trace("{}{}:{}{}:{}{}",
+        val1.d1, val1.d2,
+        val2.d1, val2.d2,
+        val3.d1, val3.d2);
+}
+
+network clock() {
+    instance t of timer();
+    instance h of hrs(t.elapsed);
+    instance m of mins(t.elapsed);
+    instance s of secs(t.elapsed);
+    instance _ of disp(h.vals, m.vals, s.vals);
+}
