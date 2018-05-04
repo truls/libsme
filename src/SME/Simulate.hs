@@ -867,10 +867,10 @@ getValue _ = throw $ InternalCompilerError "SimRef does not have a simple value"
 
 evalConstExpr :: Expr -> SimM Value
 evalConstExpr PrimLit {..} = return $ toValue lit
-evalConstExpr PrimName {name = Name {..}} =
+evalConstExpr PrimName {name = n@Name {..}} =
   case parts of
     (IdentName {ident = ident} :| _) -> getValue =<< lookupCurVtableE ident
-    (ArrayAccess {} :| _)            -> undefined
+    (ArrayAccess {} :| _)            -> getValueVtab n
 evalConstExpr _ = error "TODO: Better constexpr evaluation"
     -- do
     -- lookupCurVtable ident >>= \case
