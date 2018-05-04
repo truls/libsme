@@ -454,14 +454,15 @@ class ToValue a where
   toValue :: a -> Value
 
 instance ToValue Literal where
-  toValue LitInt {..}  = IntVal intVal
+  toValue LitInt {..} = IntVal intVal
   -- FIXME: This calls for changing the representation of floating point values in
   -- the AST to something completely accurate.
-  toValue LitFloat {}  = undefined
-  toValue LitArray {}  = undefined
+  toValue LitFloat {} = undefined
+  toValue LitArray {..} =
+    ArrayVal (length arrayVal) $ fromList (map toValue arrayVal)
   toValue LitString {} = undefined
-  toValue LitTrue {}   = BoolVal True
-  toValue LitFalse {}  = BoolVal False
+  toValue LitTrue {} = BoolVal True
+  toValue LitFalse {} = BoolVal False
 
 instance ToValue Int where
   toValue v = IntVal $ fromIntegral v
@@ -765,6 +766,8 @@ setValueVtab Name {parts = parts} v' = go parts
                      MutVal
                        (ArrayVal l (v // [(idx, v')]))
                        (max v' (absValue m))
+            ConstVal ArrayVal {} ->
+              throw $ InternalCompilerError "immutable array"
             _ -> throw $ InternalCompilerError "Non-array value"
     go (i :| [i2]) = do
       i' <- ensureNamePartIdent i
@@ -802,12 +805,15 @@ getValueVtab Name {parts = parts} = go parts
           i <- ensureNamePartIdent namePart
           idx <- ensureIndex index
           getInVtab i >>= \case
-            MutVal (ArrayVal l v) _ ->
-              if idx > (fromIntegral l - 1)
-                -- TODO: Dedicated error type
-                then throw $ InternalCompilerError "Index out of bounds"
-                else return $ v ! fromIntegral idx
+            MutVal (ArrayVal l v) _ -> readArray idx l v
+            ConstVal (ArrayVal l v) -> readArray idx l v
             _ -> throw $ InternalCompilerError "Non-array value"
+      where
+        readArray idx l v =
+          if idx > (fromIntegral l - 1)
+                 -- TODO: Dedicated error type
+            then throw $ InternalCompilerError "Index out of bounds"
+            else return $ v ! fromIntegral idx
     go (p :| [p2])
       -- FIXME: This is a hack
      = do
