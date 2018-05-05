@@ -2,8 +2,10 @@ module SME.Util
   ( displayLoc'
   , fst3
   , mkRange
+  , identToName
   ) where
 
+import           Data.List.NonEmpty    (NonEmpty ((:|)))
 import           Data.Loc              (Located, displayLoc, locOf, noLoc)
 
 import           Language.SMEIL.Syntax
@@ -24,3 +26,7 @@ mkRange =
          (PrimLit (typeOf (0 :: Integer)) (LitInt 0 noLoc) noLoc)
          (PrimLit (typeOf x) x noLoc)
          noLoc)
+
+-- FIXME: Consider a type class for this
+identToName :: Ident -> Name
+identToName i = Name (IdentName i noLoc :| []) noLoc

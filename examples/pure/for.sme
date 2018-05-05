@@ -1,0 +1,19 @@
+proc a () {
+    for i = 1 to 10 {
+        trace("{}", i);
+    }
+
+    for i = 20 to 30 {
+        if (i == 25) {
+            break;
+        }
+        trace("{}", i);
+    }
+    for i = 10 to 0 {
+        trace("{}", i);
+    }
+}
+
+network n () {
+    instance _ of a();
+}

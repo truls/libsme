@@ -42,7 +42,7 @@ import           Data.Maybe                        (catMaybes, fromMaybe,
 
 import           Control.Monad.Except              (MonadError)
 import           Control.Monad.Extra               (concatForM, concatMapM,
-                                                    mapMaybeM, unlessM)
+                                                    mapMaybeM, unlessM, whenM)
 import           Control.Monad.IO.Class            (MonadIO, liftIO)
 import           Control.Monad.State               (MonadState, get, gets,
                                                     modify)
@@ -62,6 +62,7 @@ import           SME.API.Internal
 import           SME.CsvWriter
 import           SME.Error
 import           SME.Representation
+import           SME.Util
 
 --import           Debug.Trace
 --import           Text.Show.Pretty                  (ppShow)
@@ -135,14 +136,25 @@ instance (MonadRepr SimExt) SimM where
 
 
 data Context = Context
-  { parent :: Maybe Ident
+  { parent     :: Maybe Ident
+  , breakGuard :: Maybe Ident
   }
 
 mkContext :: Context
-mkContext = Context {parent = Nothing}
+mkContext = Context {parent = Nothing, breakGuard = Nothing}
 
 withParent :: Ident -> SimM a -> SimM a
 withParent x = local (\e -> e {parent = Just x})
+
+withBreakGuard :: SimM a -> SimM a
+withBreakGuard act = do
+  brkLab <- getFreshLabel
+  let bName = Ident (T.pack $ "__break" ++ show brkLab) noLoc
+  withLocalVar bName (toValue False) $
+    local (\e -> e {breakGuard = Just bName}) act
+
+getBreakGuard :: SimM (Maybe Ident)
+getBreakGuard = asks breakGuard
 
 getParent :: SimM (Maybe Ident)
 getParent = asks parent
@@ -304,8 +316,52 @@ evalStm Assert {..} =
       (BoolVal True) -> return ()
       _ -> throw $ InternalCompilerError "Assertion not a boolean"
 
+evalStm For {..} = do
+  start <- evalExpr from
+  end <- evalExpr to
+  let ops =
+        if start <= end
+          then (PlusOp noLoc, GeqOp noLoc)
+          else (MinusOp noLoc, LeqOp noLoc)
+  end' <- evalBinOp (fst ops) end (toValue (1 :: Integer))
+  -- We abuse the vtable a bit here and use it to hold a "breakguard" variable
+  -- which is set to true by the break statement.
+  -- FIXME: Handle this in a nicer way
+  withBreakGuard $
+    withLocalVar var start $ loop ops start end' (identToName var)
+  where
+    checkBreakGuard =
+      getBreakGuard >>= \case
+        Nothing -> return False
+        Just g -> do
+          val <- getValueVtab $ identToName g
+          valueToBoolE =<< evalBinOp (EqOp noLoc) val (toValue True)
+    evalStmsCheckGuard [] = return True
+    evalStmsCheckGuard (s:stms) = do
+      brk <- checkBreakGuard
+      if brk
+        then return False
+        else do
+          evalStm s
+          evalStmsCheckGuard stms
+    loop ops@(incrOp, cmpOp) cur end counter =
+      whenM (evalStmsCheckGuard body) $ do
+        cur' <- evalBinOp incrOp cur (toValue (1 :: Integer))
+        setValueVtab counter cur'
+        unlessM
+          (valueToBoolE =<< evalBinOp cmpOp cur' end)
+          (loop ops cur' end counter)
+
+evalStm Break {} =
+  getBreakGuard >>= \case
+    Nothing -> throw $ InternalCompilerError "Break called outside loop"
+    Just b -> setValueVtab (identToName b) (toValue True)
+
 evalStm _ = error "Simulation of all statements not implemented yet"
 
+valueToBoolE :: Value -> SimM Bool
+valueToBoolE (BoolVal v) = pure v
+valueToBoolE _           = throw $ InternalCompilerError "Expected bool"
 
 -- | Evaluates an expression
 evalExpr :: Expr -> SimM Value
@@ -696,6 +752,15 @@ addCurVtable :: Ident -> SimRef -> SimM ()
 addCurVtable i r = do
   vtab <- getCurVtable
   putCurVtable $ M.insert i r vtab
+
+-- | Performs the computation 'act' with the variable 'i' present in the vtable
+-- initially assigned to value 'r'
+withLocalVar :: Ident -> Value -> SimM a -> SimM a
+withLocalVar i r act = do
+  addCurVtable i (MutVal r r)
+  res <- act
+  putCurVtable . M.delete i =<< getCurVtable
+  return res
 
 putCurVtable :: VTable -> SimM ()
 putCurVtable vtab = do

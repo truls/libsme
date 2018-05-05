@@ -18,6 +18,8 @@ import           Control.Monad               (foldM, forM, forM_, unless,
 import           Control.Monad.Except        (MonadError)
 
 import           Control.Monad.Identity      (Identity, runIdentity)
+import           Control.Monad.Reader        (MonadReader, ReaderT, asks, local,
+                                              runReaderT)
 import           Control.Monad.State         (MonadState)
 import           Control.Monad.Writer        (MonadWriter, WriterT, runWriterT,
                                               tell)
@@ -69,10 +71,11 @@ type SymTab = BaseSymTab Void
 
 -- | Main typechecking monad
 newtype TyM a = TyM
-  { unTyM :: WriterT Warns (ReprM Identity Void) a
+  { unTyM :: ReaderT Context (WriterT Warns (ReprM Identity Void)) a
   } deriving ( Functor
              , Applicative
              , Monad
+             , MonadReader Context
              , MonadWriter Warns
              , MonadState Env
              , MonadError TypeCheckErrors
@@ -84,6 +87,19 @@ data AccessType
   = Store
   | Load
   deriving Eq
+
+data Context = Context
+  { inLoop :: Bool
+  }
+
+mkContext :: Context
+mkContext = Context { inLoop = False }
+
+withInLoop :: TyM a -> TyM a
+withInLoop = local (\x -> x { inLoop = True })
+
+isInLoop :: TyM Bool
+isInLoop = asks inLoop
 
 lookupBus :: (References a, MonadRepr Void m) => a -> m DefType
 lookupBus r =
@@ -332,7 +348,7 @@ checkStm For {..}
   ty <- unifyTypes (Just (Unsigned (Just 1) noLoc)) fromTy toTy
   -- TODO: Unless toTy is into
   body' <-
-    withLocalEnv $ do
+    withLocalEnv $ withInLoop $ do
       addDefinition var (mkVarDef var ty emptyExt)
       mapM checkStm body
   return $ For var from' to' body' loc
@@ -380,7 +396,10 @@ checkStm as@Assert {..}
   return $ Assert descr c' loc
 
 checkStm Barrier {..} = return $ Barrier loc
-checkStm Break {..} = return $ Break loc
+checkStm br@Break {..} =
+  isInLoop >>= \case
+    False -> throw $ BreakOutsideLoop br
+    True -> return $ Break loc
 checkStm Return {..} = do
   -- TODO: make sure that context is a function and make sure that return value
   -- matches declared return value of function. Maybe use a context stack in env
@@ -847,7 +866,9 @@ buildEnv df = do
 typeCheck :: DesignFile -> Config -> IO (Env, Warns)
 typeCheck df conf = do
   let (res, env) =
-        runReprMidentity (mkEnv conf Void) (runWriterT $ unTyM (buildEnv df))
+        runReprMidentity
+          (mkEnv conf Void)
+          (runWriterT $ runReaderT (unTyM (buildEnv df)) mkContext)
   case res of
     Left e       -> throwIO e
     Right (_, l) -> return (env, l)
