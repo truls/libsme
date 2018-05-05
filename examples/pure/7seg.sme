@@ -3,7 +3,7 @@ proc timer ()
         secs: uint;
     };
     const secs_per_day: uint = 86400;
-    var cur: u17;
+    var cur: u17 = 100;
 {
     cur = (cur + 1) % secs_per_day;
     elapsed.secs = cur;
@@ -107,15 +107,15 @@ proc disp (in val1, in val2, in val3) {
 }
 
 network clock() {
-    instance t of timer();
-    instance h of hrs(t.elapsed);
-    instance m of mins(t.elapsed);
-    instance s of secs(t.elapsed);
+    instance t    of timer();
+    instance h    of hrs(t.elapsed);
+    instance m    of mins(t.elapsed);
+    instance s    of secs(t.elapsed);
     instance ench of encode(h.vals);
     instance encm of encode(m.vals);
     instance encs of encode(s.vals);
     instance dech of decode(ench.vals);
     instance decm of decode(encm.vals);
     instance decs of decode(encs.vals);
-    instance _ of disp(dech.vals, decm.vals, decs.vals);
+    instance _    of disp(dech.vals, decm.vals, decs.vals);
 }
