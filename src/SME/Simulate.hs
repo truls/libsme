@@ -1283,7 +1283,7 @@ updateVarTypes ps = do
          let t' =
                if noStrict || isUnsized t
                  then (valueToType v t, r')
-                 else (t, Nothing)
+                 else (t, r')
          return (r, t'))
   forM_ maxtypes $ \(r, (t, r')) ->
     withScope (N.head r) $ updateDef r (setType t r')
