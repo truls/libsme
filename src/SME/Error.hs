@@ -75,6 +75,9 @@ data TypeCheckErrors where
   ArgumentError :: (Located a) => a -> String -> TypeCheckErrors
   AssertionError :: (Located a, Pretty a) => a -> Maybe String -> TypeCheckErrors
   FormatStringMismatch :: (Show a, Located b) => a -> a -> b -> TypeCheckErrors
+  BreakOutsideLoop :: (Located a) => a -> TypeCheckErrors
+  ArrayIndexOutOfBounds :: (Located a) => a -> TypeCheckErrors
+  OperandType :: (Located a, Pretty a, Pretty b) => a -> b -> TypeCheckErrors
   InternalCompilerError :: String -> TypeCheckErrors
   deriving (Exception)
 
@@ -131,7 +134,8 @@ instance Show TypeCheckErrors where
   show (BusShapeMismatch expected actual inst) =
     "Unable to unify bus shapes in instantiation at " ++
     displayLoc' inst ++
-    " expected: \b" ++ ppShow expected ++ "\n\nbut saw\n\n" ++ ppShow actual ++ "."
+    " expected: \b" ++
+    ppShow expected ++ "\n\nbut saw\n\n" ++ ppShow actual ++ "."
   show (InstanceParamTypeMismatch inst) =
     "Wrong parameter type (bus parameter where a constant is" ++
     " expected or vice-versa) in instantiation at " ++ displayLoc' inst
@@ -162,6 +166,13 @@ instance Show TypeCheckErrors where
     show expected ++
     " parameters, but was only given " ++
     show actual ++ ". At " ++ displayLoc' def
+  show (BreakOutsideLoop def) =
+    "Break statement outside loop at " ++ displayLoc' def
+  show (ArrayIndexOutOfBounds def) = "Index out of bounds " ++ displayLoc' def
+  show (OperandType op ty) =
+    "Unsupported type " ++
+    pprrString ty ++
+    " for operand " ++ pprrString op ++ " At " ++ displayLoc' op
   show (InternalCompilerError msg) =
     "Internal compiler error (probable compiler bug): " ++ msg
 

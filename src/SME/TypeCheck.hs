@@ -189,6 +189,7 @@ typeSubsetOf t1@(Typed a) t2@(Typed b) =
     go (Signed Nothing _) (Signed _ _)             = True
     go (Unsigned l1 _) (Unsigned l2 _)             = l1 >= l2
     go (Signed (Just l1) _) (Unsigned (Just l2) _) = l1 >= (l2 + 1)
+    go (Unsigned (Just l1) _) (Signed (Just l2) _) = l1 >= (l2 + 1)
     go (Signed l1 _) (Signed l2 _)                 = l1 >= l2
     go l1 l2                                       = l1 == l2
 typeSubsetOf t1 t2 = throw $ TypeMismatchError t2 t1
@@ -276,6 +277,97 @@ flipSign (Typed t) = Typed $ go t
     go t1 = t1
 flipSign Untyped = Untyped
 
+-- | Given a binary operator and a type. Returns the type returned by the
+-- operand and raises an exception if operator is invalid for type
+retTypeBin :: (MonadRepr s m) => BinOp -> Typeness -> m Typeness
+retTypeBin _ Untyped = pure Untyped
+retTypeBin o (Typed t) = Typed <$> go o t
+  where
+    go PlusOp {} Signed {}    = pure t
+    go PlusOp {} Unsigned {}  = pure t
+    go PlusOp {} Single {}    = pure t
+    go PlusOp {} Double {}    = pure t
+    go MinusOp {} Signed {}   = pure t
+    go MinusOp {} Unsigned {} = pure t
+    go MinusOp {} Single {}   = pure t
+    go MinusOp {} Double {}   = pure t
+    go MulOp {} Signed {}     = pure t
+    go MulOp {} Unsigned {}   = pure t
+    go MulOp {} Single {}     = pure t
+    go MulOp {} Double {}     = pure t
+
+    go DivOp {} Signed {}     = pure t
+    go DivOp {} Unsigned {}   = pure t
+    go DivOp {} Single {}     = pure t
+    go DivOp {} Double {}     = pure t
+
+    go ModOp {} Signed {}     = pure t
+    go ModOp {} Unsigned {}   = pure t
+    go SllOp {} Signed {}     = pure t
+    go SllOp {} Unsigned {}   = pure t
+    go SrlOp {} Signed {}     = pure t
+    go SrlOp {} Unsigned {}   = pure t
+    go AndOp {} Signed {}     = pure t
+    go AndOp {} Unsigned {}   = pure t
+    go OrOp {} Signed {}      = pure t
+    go OrOp {} Unsigned {}    = pure t
+    go XorOp {} Signed {}     = pure t
+    go XorOp {} Unsigned {}   = pure t
+
+    go ConOp {} Bool {}       = pure t
+    go DisOp {} Bool {}       = pure t
+
+    go EqOp {} Signed {..}    = pure (Bool loc)
+    go EqOp {} Unsigned {..}  = pure (Bool loc)
+    go EqOp {} Single {..}    = pure (Bool loc)
+    go EqOp {} Double {..}    = pure (Bool loc)
+    go EqOp {} Bool {..}      = pure (Bool loc)
+
+    go NeqOp {} Signed {..}   = pure (Bool loc)
+    go NeqOp {} Unsigned {..} = pure (Bool loc)
+    go NeqOp {} Single {..}   = pure (Bool loc)
+    go NeqOp {} Double {..}   = pure (Bool loc)
+    go NeqOp {} Bool {..}     = pure (Bool loc)
+
+    go GeqOp {} Signed {..}   = pure (Bool loc)
+    go GeqOp {} Unsigned {..} = pure (Bool loc)
+    go GeqOp {} Single {..}   = pure (Bool loc)
+    go GeqOp {} Double {..}   = pure (Bool loc)
+
+    go LeqOp {} Signed {..}   = pure (Bool loc)
+    go LeqOp {} Unsigned {..} = pure (Bool loc)
+    go LeqOp {} Single {..}   = pure (Bool loc)
+    go LeqOp {} Double {..}   = pure (Bool loc)
+
+    go GtOp {} Signed {..}    = pure (Bool loc)
+    go GtOp {} Unsigned {..}  = pure (Bool loc)
+    go GtOp {} Single {..}    = pure (Bool loc)
+    go GtOp {} Double {..}    = pure (Bool loc)
+
+    go LtOp {} Signed {..}    = pure (Bool loc)
+    go LtOp {} Unsigned {..}  = pure (Bool loc)
+    go LtOp {} Single {..}    = pure (Bool loc)
+    go LtOp {} Double {..}    = pure (Bool loc)
+    go op ty                  = throw $ OperandType op ty
+
+retTypeUn :: (MonadRepr s m) => UnOp -> Typeness -> m Typeness
+retTypeUn _ Untyped = pure Untyped
+retTypeUn o (Typed t) = Typed <$> go o t
+  where
+    go UnPlus {} Signed {}    = pure t
+    go UnPlus {} Unsigned {}  = pure t
+    go UnPlus {} Single {}    = pure t
+    go UnPlus {} Double {}    = pure t
+    go UnMinus {} Signed {}   = pure t
+    go UnMinus {} Unsigned {} = pure t
+    go UnMinus {} Single {}   = pure t
+    go UnMinus {} Double {}   = pure t
+    go NotOp {} Bool {}       = pure t
+    go NegOp {} Signed {}     = pure t
+    go NegOp {} Unsigned {}   = pure t
+    go op ty                  = throw $ OperandType op ty
+
+
 checkExpr' :: (MonadRepr s m) => Expr -> m Expr
 checkExpr' e = snd <$> checkExpr e
 
@@ -293,25 +385,16 @@ checkExpr Binary {..} = do
   (t1, e1) <- checkExpr left
   (t2, e2) <- checkExpr right
   t' <- unifyTypes Nothing t1 t2
-
-  let retTy =
-        case binOp of
-          EqOp l  -> Typed (Bool l)
-          OrOp l  -> Typed (Bool l)
-          LtOp l  -> Typed (Bool l)
-          GtOp l  -> Typed (Bool l)
-          LeqOp l -> Typed (Bool l)
-          GeqOp l -> Typed (Bool l)
-          _       -> t'
+  retTy <- retTypeBin binOp t'
   return (retTy, Binary retTy binOp e1 e2 loc)
 checkExpr Unary {..} = do
   (t', e') <- checkExpr right
-  let t'' =
+  t'' <- retTypeUn unOp t'
+  let t''' =
         case unOp of
-          UnMinus _ -> flipSign t'
-          NotOp l   -> Typed (Bool l)
+          UnMinus _ -> flipSign t''
           _         -> t'
-  return (t'', Unary t'' unOp e' loc)
+  return (t''', Unary t''' unOp e' loc)
 checkExpr Parens {..} = do
   (t', e') <- checkExpr innerExpr
   return (t', Parens t' e' loc)
@@ -321,8 +404,8 @@ checkStm :: Statement -> TyM Statement
 checkStm Assign {..} = do
   destTy <- trackUsage Store dest lookupName
   -- TODO: Clean up these double withTypectx
-  (t, val') <- withTypeCtx destTy $ checkExpr val
-  _ <- withTypeCtx destTy $ unifyTypes Nothing destTy t
+  (_t, val') <- withTypeCtx destTy $ checkExpr val
+  --_ <- withTypeCtx destTy $ unifyTypes Nothing destTy t
   return $ Assign dest val' loc
 checkStm If {..} = do
   (condTy, cond') <- checkExpr cond
