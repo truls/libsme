@@ -230,7 +230,7 @@ unifyTypes expected t1 t2 = do
       Signed
         (Just
            (max l1 l2 +
-            (if l1 >= l2
+            (if l2 >= l1
                then 1
                else 0)))
         loc
