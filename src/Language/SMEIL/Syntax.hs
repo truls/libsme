@@ -565,6 +565,7 @@ isUnsized :: (Typed a) => a -> Bool
 isUnsized ty = case typeOf ty of
   (Typed (Signed Nothing _))   -> True
   (Typed (Unsigned Nothing _)) -> True
+  (Typed Array {..})           -> isUnsized innerTy
   (Typed _)                    -> False
   Untyped                      -> True
 
