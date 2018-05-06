@@ -6,7 +6,7 @@ import           Options.Applicative
 import           System.Directory    (createDirectory, doesDirectoryExist,
                                       doesFileExist)
 import           System.Exit         (exitFailure)
-import           System.IO           (hPutStr, stderr)
+import           System.IO           (hPutStrLn, stderr)
 
 import           SME.Error
 import           SME.Stages
@@ -31,5 +31,5 @@ main = do
     Nothing -> return ()
   compile opts `catch`
     (\(CompilerError e) -> do
-       hPutStr stderr e
+       hPutStrLn stderr e
        exitFailure)
