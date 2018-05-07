@@ -304,7 +304,7 @@ evalStm Trace {..} =
         else do
           let s = T.splitOn "{}" stringVal
           vals <- map pprr <$> mapM evalExpr subs
-          let res = mconcat $ zipWith (<>) s vals
+          let res = mconcat $ zipWith (<>) s (vals <> [T.empty])
           liftIO $ T.putStrLn res
     _ -> throw $ InternalCompilerError "Not a string lit"
 
