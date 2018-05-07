@@ -298,11 +298,14 @@ evalStm Switch {..} = do
 evalStm Trace {..} =
   case str of
     LitString {stringVal = stringVal} ->
-      unlessM (getConfig quiet) $ do
-        let s = T.splitOn "{}" stringVal
-        vals <- map pprr <$> mapM evalExpr subs
-        let res = mconcat $ zipWith (<>) s vals
-        liftIO $ T.putStrLn res
+      unlessM (getConfig quiet) $
+      if null subs
+        then liftIO $ T.putStrLn stringVal
+        else do
+          let s = T.splitOn "{}" stringVal
+          vals <- map pprr <$> mapM evalExpr subs
+          let res = mconcat $ zipWith (<>) s vals
+          liftIO $ T.putStrLn res
     _ -> throw $ InternalCompilerError "Not a string lit"
 
 evalStm Assert {..} =

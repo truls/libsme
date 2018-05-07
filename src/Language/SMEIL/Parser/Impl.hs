@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Language.SMEIL.Parser.Impl where
@@ -216,11 +217,13 @@ statement =
         defaultCase = reserved "default" *> braces (some statement)
     traceStm =
       reserved "trace" >>
-      (parens
+      parens
         -- TODO: Make the stringLit parser return a Literal type
-         (S.Trace <$> (withPos (S.LitString <$> stringLit) <* comma) <*>
-          (expression `sepBy` comma)) <*
-       semi)
+        (S.Trace <$> withPos (S.LitString <$> stringLit) <*>
+         (optional comma >>= \case
+            Nothing -> return []
+            Just _ -> expression `sepBy` comma)) <*
+      semi
     assertStm =
       reserved "assert" >>
       (parens
