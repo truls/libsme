@@ -292,7 +292,7 @@ table =
        , binary "<" bin S.LtOp
        , binary ">" bin S.GtOp
        ]
-     , [binary "==" bin S.EqOp, binary "!=" bin S.EqOp]
+     , [binary "==" bin S.EqOp, binary "!=" bin S.NeqOp]
      , [ binary' (doubleSymGuard '&') bin S.AndOp
        , binary "^" bin S.XorOp
        , binary' (doubleSymGuard '|') bin S.OrOp
