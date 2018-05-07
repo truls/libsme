@@ -252,14 +252,15 @@ instance Show SimRef where
 -- | Runs a ProcInst and saves its modified vtable
 runProcess :: ProcInst -> SimM ProcInst
 runProcess p@ProcInst {..} = do
-  (vtab, _) <- withVtable valueTab $ mapM_ evalStm stmts
+  (vtab, _) <- withScope fromEnt $ withVtable valueTab $ mapM_ evalStm stmts
   return $ p {valueTab = vtab}
 
 -- | Evaluates a statement
 evalStm :: Statement -> SimM ()
 evalStm Assign {..} = do
   r <- evalExpr val
-  setValueVtab dest r
+  ty <- lookupTy dest
+  setValueVtab dest (truncateAsType r ty)
 evalStm If {..} = do
   c <- evalCondPair [(cond, body)]
   unless c $ do

@@ -45,6 +45,7 @@ module SME.Representation
   , mkConfig
   , InstParam(..)
   , valueToLit
+  , truncateAsType
   ) where
 
 import           Control.Exception               (throw)
@@ -61,6 +62,8 @@ import           Data.List.NonEmpty              (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty              as N
 import           Data.Maybe                      (fromJust, isJust)
 
+import           Data.Bits                       (complement, testBit, (.&.))
+import           Data.Bits.Bitwise               (mask)
 import qualified Data.HashMap.Strict             as M
 import           Data.Loc                        (Located, locOf, noLoc)
 import qualified Data.Set                        as S
@@ -461,6 +464,22 @@ absValue (IntVal v)    = IntVal $ abs v
 absValue (DoubleVal v) = DoubleVal $ abs v
 absValue (SingleVal v) = SingleVal $ abs v
 absValue v             = v
+
+
+-- | Truncates integer values to their bit length with accurate overflow
+-- emulation
+truncateAsType :: Value -> Typeness -> Value
+truncateAsType (IntVal v) (Typed (Unsigned (Just sz) _)) =
+  IntVal $ mask (fromIntegral sz) .&. v
+truncateAsType (IntVal v) (Typed (Signed (Just sz) _)) =
+  IntVal $
+  if testBit v (fromIntegral sz - 1)
+    then negate (mask (fromIntegral sz - 1) .&. complement v) - 1
+    else mask (fromIntegral sz - 1) .&. v
+truncateAsType v (Typed Array {..}) =
+  truncateAsType v (Typed innerTy)
+truncateAsType v _ = v
+
 
 mkVarDef :: Ident -> Typeness -> a -> BaseDefType a
 mkVarDef i t el =

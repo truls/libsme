@@ -44,6 +44,7 @@ extra-deps:
     commit: f0e0ca2ff23a99d0d562db976da58869b6b300eb
   - mainland-pretty-0.7
   - srcloc-0.5.1.2
+  - bitwise-1.0.0.1
 
   # - git: https://github.com/truls/language-smeil
   #   commit: 07eb947afe0bc26db8a19575e793552740cab551
