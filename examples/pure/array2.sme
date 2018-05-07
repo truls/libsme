@@ -1,0 +1,15 @@
+proc a ()
+    var arr: [4]i3 = [2,1,1,1];
+{
+    for i = 0 to 3 {
+        if (arr[i] != 0) {
+            break;
+        }
+        arr[i] = arr[i] + 1;
+    }
+    trace("{} {} {} {}", arr[0], arr[1], arr[2], arr[3]);
+}
+
+network n () {
+    instance _ of a ();
+}

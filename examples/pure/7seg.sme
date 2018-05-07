@@ -3,7 +3,7 @@ proc timer ()
         secs: uint;
     };
     const secs_per_day: uint = 86400;
-    var cur: u17 = 100;
+    var cur: u17;
 {
     cur = (cur + 1) % secs_per_day;
     elapsed.secs = cur;

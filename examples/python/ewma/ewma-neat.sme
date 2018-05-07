@@ -1,0 +1,52 @@
+sync proc calc (in data, const decay)
+    bus result {
+        val: int;
+        valid: bool;
+    };
+    var prev: int;
+    const sub: int = 1;
+
+{
+    if (data.valid) {
+        result.valid = true;
+        prev = (data.val >> decay) +
+            (prev >> decay) *
+            ((sub << decay) - sub);
+        result.val = prev;
+    } elif (!data.valid) {
+        result.val = prev;
+    } else {
+        result.valid = false;
+    }
+}
+
+sync proc merge (in long, in short, out res) {
+    if (long.valid && short.valid) {
+        res.valid = true;
+        res.long = long.val;
+        res.short = short.val;
+    } else {
+        res.valid = false;
+    }
+}
+
+network ewma () {
+    const decays: [2]int = [2, 3];
+
+    exposed bus stream {
+        val: int;
+        valid: bool;
+    };
+
+    exposed bus output {
+        short: int;
+        long: int;
+        valid: bool;
+    };
+
+    instance short of calc (data: stream, decay: decays[0]);
+    instance long of calc (data: stream, decay: decays[1]);
+    instance _ of merge (long: long.result,
+                         short: short.result,
+                         res: output);
+}

@@ -1,0 +1,13 @@
+proc a ()
+    const c: int = 3;
+    const b: int = 3;
+
+{
+    if (b > 4) {
+        trace("const {}", (1 + 4) % c);
+    }
+}
+
+network n() {
+    instance _ of a();
+}

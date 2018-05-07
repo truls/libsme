@@ -1,0 +1,13 @@
+proc a ()
+    var n: i2 = 0;
+    var m: u80 = 0;
+{
+    n = n - 1;
+    m = m - 1;
+    trace("{} {}", n, m);
+    //trace("u: {}", m);
+}
+
+network n () {
+    instance _ of a();
+}

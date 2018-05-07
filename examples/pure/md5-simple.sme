@@ -1,0 +1,113 @@
+from  md5 import md5;
+//
+
+sync proc generator()
+    var current: [8]u8 = [
+    //0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41
+    32, 32, 32, 32, 32, 32, 32, 32
+                        ];
+    const min: uint = 32;
+    const max: uint = 127;
+
+    bus output {
+        w0: u32;
+        w1: u32;
+    };
+
+    var tmp1: u32;
+    var tmp2: u32;
+
+{
+    tmp1 = (current[0] |
+        current[1] << 8 |
+        current[2] << 16 |
+        current[3] << 24);
+
+    tmp2 = (current[4] |
+        current[5] << 8 |
+        current[6] << 16 |
+        current[7] << 24);
+
+    //trace("Emitting hash: {} {}", tmp1, tmp2);
+    output.w0 = tmp1;
+    output.w1 = tmp2;
+    for i = 0 to 7 {
+        current[i] = (current[i] + 1) % max;
+       // trace("Current {} is {}", i, current[i]);
+        if (current[i] != 0) {
+            break;
+        } else {
+            current[i] = min;
+        }
+    }
+}
+
+sync proc verifier(in input)
+    // const h0: uint = 0xbb3e8d75; // "       A"
+    // const h1: uint = 0x88403d30;
+    // const h2: uint = 0x64011cea;
+    // const h3: uint = 0x8b4436b7;
+
+    const h0: uint = 0x5664def2; // "       B"
+    const h1: uint = 0x620934ac;
+    const h2: uint = 0xdf07c231;
+    const h3: uint = 0x48becfe9;
+
+    bus output {
+        valid: bool;
+        w0: u32;
+        w1: u32;
+    };
+
+    var found: bool = false;
+{
+    if (!found)
+    {
+    trace("verifying hash {} {} {} {}", input.h0, input.h1, input.h2, input.h3);
+        output.w0 = input.w0;
+        output.w1 = input.w1;
+        if (input.h0 == h0 && input.h1 == h1 &&
+            input.h2 == h2 && input.h3 == h3)
+        {
+            output.valid = true;
+            found = true;
+            trace("{} {} {} {} found", input.h0, input.h1, input.h2, input.h3);
+        }
+    }
+}
+
+
+
+sync proc encoder(in verifier_output)
+    bus enc_out {
+        val: i32;
+    };
+{
+    if (verifier_output[c].valid) {
+        encoder_out.val = c;
+    }
+}
+
+sync proc collector(in verifier_output)
+    exposed bus collected {
+        valid: bool;
+        w1: u32;
+        w2: u32;
+    };
+{
+    if (encoder.enc_out.val <= len(verifier_output)) {
+        collected.valid = verifier_output[encoder.enc_out.val].valid;
+        collected.w1 = verifier_output[encoder.enc_out.val].w1;
+        collected.w2 = verifier_output[encoder.enc_out.val].w2;
+    } else  {
+        collected.valid = false;
+        collected.w0 = false;
+        collected.w1 = false;
+    }
+}
+
+network md5_simple () {
+    instance gen of generator();
+    instance w of md5(gen.output);
+    instance _ of verifier(w.hashes);
+}
