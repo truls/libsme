@@ -336,7 +336,7 @@ genPorts NetworkTable {} =
 genDefaultExpr :: Maybe Literal -> Typeness -> GenM V.Expression
 genDefaultExpr sigVal ty =
   case sigVal of
-    Just e -> withType genLit e
+    Just e -> withType' ty $ genLit e
     Nothing ->
       case ty of
         Typed Array {..} -> do
