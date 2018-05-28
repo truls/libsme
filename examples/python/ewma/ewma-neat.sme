@@ -3,15 +3,14 @@ sync proc calc (in data, const decay)
         val: int;
         valid: bool;
     };
-    var prev: int;
-    const sub: int = 1;
+    var prev: i11;
 
 {
     if (data.valid) {
         result.valid = true;
         prev = (data.val >> decay) +
             (prev >> decay) *
-            ((sub << decay) - sub);
+            ((1 << decay) - 1);
         result.val = prev;
     } elif (!data.valid) {
         result.val = prev;
@@ -31,7 +30,8 @@ sync proc merge (in long, in short, out res) {
 }
 
 network ewma () {
-    const decays: [2]int = [2, 3];
+    const decay1: int = 2;
+    const decay2: int = 3;
 
     exposed bus stream {
         val: int;
@@ -44,8 +44,8 @@ network ewma () {
         valid: bool;
     };
 
-    instance short of calc (data: stream, decay: decays[0]);
-    instance long of calc (data: stream, decay: decays[1]);
+    instance short of calc (data: stream, decay: decay1);
+    instance long of calc (data: stream, decay: decay2);
     instance _ of merge (long: long.result,
                          short: short.result,
                          res: output);

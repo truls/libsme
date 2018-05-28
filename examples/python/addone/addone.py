@@ -6,15 +6,15 @@ class Id(SimulationProcess):
         self.map_ins(ins, "inp")
 
     def run(self):
-        #print("Got val", self.out["val"])
-        result[0] = self.out["val"]
+        print("Got val", self.out["val"])
+        result[0] = self.out["val"] + 1
         self.out["val"] = self.inp["val"]
         self.out["valid"] = True
 
-@extends("addone.sme")
+@extends("addone.sme", ['-t', 'trace.csv', '--force'])
 class AddOne(Network):
     def wire(self, result):
-        plus_out = ExternalBus("plusout")
+        plus_out = ExternalBus("plusone_inst.plusout")
         id_out = ExternalBus("idout")
         p = Id("Id", [plus_out], [id_out], result)
         self.add(plus_out)

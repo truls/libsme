@@ -1,25 +1,14 @@
 proc A ()
     instance b1 of B();
     instance b2 of B();
-{
-}
-
+{}
 proc B ()
     instance c1 of C();
     instance c2 of C();
     instance c3 of C();
-{
-}
-
+{}
 proc C ()
-    //instance a1 of N();
-{
-}
-
-proc D ()
-{
-}
-
+{}
 network N () {
     instance _ of A();
 }

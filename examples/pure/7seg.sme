@@ -1,6 +1,6 @@
 proc timer ()
     bus elapsed {
-        secs: uint;
+        secs: u17;
     };
     const secs_per_day: uint = 86400;
     var cur: u17;
@@ -11,11 +11,11 @@ proc timer ()
 
 proc hrs (in time)
     bus vals {
-        d1: uint;
-        d2: uint;
+        d1: u17;
+        d2: u17;
     };
     const secs_per_hr: uint = 3600;
-    var cur: uint;
+    var cur: u17;
 {
     cur = time.secs/secs_per_hr;
     vals.d1 = cur/10;
@@ -24,11 +24,11 @@ proc hrs (in time)
 
 proc mins (in time)
     bus vals {
-        d1: uint;
-        d2: uint;
+        d1: u17;
+        d2: u17;
     };
     const secs_per_min: uint = 60;
-    var cur: uint;
+    var cur: u17;
 {
     cur = time.secs / secs_per_min % secs_per_min;
     vals.d1 = cur/10;
@@ -37,10 +37,10 @@ proc mins (in time)
 
 proc secs (in time)
     bus vals {
-        d1: uint;
-        d2: uint;
+        d1: u17;
+        d2: u17;
     };
-    var cur: uint;
+    var cur: u17;
 {
     cur = time.secs % 60;
     vals.d1 = cur/10;
@@ -49,8 +49,8 @@ proc secs (in time)
 
 proc encode (in inval)
     bus vals {
-        d1: uint;
-        d2: uint;
+        d1: u17;
+        d2: u17;
     };
     const digits: [10]uint =
         [0x7E, 0x30, 0x6D,
@@ -64,8 +64,8 @@ proc encode (in inval)
 
 proc decode (in inval)
     bus vals {
-        d1: uint;
-        d2: uint;
+        d1: u17;
+        d2: u17;
     };
 {
     switch inval.d1 {

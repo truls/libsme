@@ -2,8 +2,11 @@ proc plusone(in inbus, const val)
     exposed bus plusout {
        val: i32;
     };
+    var cur: int = 10;
 {
-    plusout.val = inbus.val + 1;
+    cur = cur - 1;
+    plusout.val = cur;
+    trace("Sent val {}", inbus.val);
 }
 
 network plusone_net() {
@@ -13,5 +16,5 @@ network plusone_net() {
     };
 
     instance plusone_inst of
-        plusone(idout);
+        plusone(idout, 0);
 }

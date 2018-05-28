@@ -32,13 +32,13 @@ class Logger(SimulationProcess):
 
     def run(self):
         if self.data["valid"]:
-            print(self.results.shape)
+            #print(self.results.shape)
             self.results[0][self.curpos] = self.data["long"]
             self.results[1][self.curpos] = self.data["short"]
         self.curpos += 1
 
 
-@extends("ewma.sme", ["-t", "trace.csv", "--force"])
+@extends("ewma-neat.sme", ["-t", "trace.csv", "--force", "--dump-stage", "typed"])
 class EWMA(Network):
     def wire(self, indata, outdata):
         count = len(indata)
@@ -63,9 +63,9 @@ def main():
         indata = np.load(f)
         indata = np.rint(indata*1000).astype(np.int64)
     #print(indata.shape)
-    print(indata.shape[0])
+    #print(indata.shape[0])
     outdata = np.zeros((2,indata.shape[0]))
-    print(outdata.shape)
+    #print(outdata.shape)
     #print(outdata.shape)
     sme.network = EWMA("EWMA", "foo", indata, outdata)
     sme.network.clock(255)

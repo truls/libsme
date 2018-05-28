@@ -5,11 +5,12 @@ sync proc calc (in data, const decay)
     //     prev: i32 = 0;
     // };
     bus result {
-        val: i32;
+        val: int;
         valid: bool;
     };
-    var prev: int;
-    const sub: i32 = 1;
+    var prev: i11;
+    //var prev: i32;
+    const sub: int = 1;
 
     //  func calc(next: i32, prev: i32) : i32
     //       var part1: i32;
@@ -51,13 +52,13 @@ network ewma () {
     const decay2: int = 3;
 
     exposed bus stream {
-        val: i9;
+        val: int;
         valid: bool;
     };
 
     exposed bus output {
-        short: i32;
-        long: i32;
+        short: int;
+        long: int;
         valid: bool;
     };
 

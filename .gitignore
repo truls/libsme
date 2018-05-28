@@ -5,3 +5,4 @@ lib/
 output/
 .ropeproject/
 trace.csv
+tools/runsme
