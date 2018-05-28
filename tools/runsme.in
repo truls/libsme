@@ -1,0 +1,5 @@
+#!/bin/sh
+
+LIBSME_DIR="%libsmedir%"
+export LIBSME_LIB="${LIBSME_DIR}/libsme.so"
+LD_PRELOAD=`ls "$LIBSME_DIR"/* | tr '\n' ':' | head -c -1` $@
