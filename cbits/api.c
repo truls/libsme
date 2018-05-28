@@ -438,7 +438,6 @@ free_value(Value* val)
 void
 sme_free(SmeCtx* ctx)
 {
-  //printf("Called free\n");
 
   if (! ctx) {
     return;

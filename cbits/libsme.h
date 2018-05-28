@@ -119,7 +119,11 @@ Value* sme_get_read_val(SmeCtx* ctx, const char* bus, const char* chan);
 **/
 bool sme_tick(SmeCtx* ctx);
 
-
+/**
+   Finalizes a simulation and dumps the recorded trace file (if any) to the file
+   system. This function should always be called following the final call to
+   sme_tick.
+**/
 bool sme_finalize(SmeCtx* ctx);
 
 bool sme_gen_code(SmeCtx* ctx, const char* file);
