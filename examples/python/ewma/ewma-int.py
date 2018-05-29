@@ -67,7 +67,7 @@ def main():
     outdata = np.zeros((2,indata.shape[0]))
     #print(outdata.shape)
     #print(outdata.shape)
-    sme.network = EWMA("EWMA", "foo", indata, outdata)
+    sme.network = EWMA("EWMA", indata, outdata)
     sme.network.clock(255)
     #print(outdata)
     x = np.linspace(0, 0.5, len(indata))

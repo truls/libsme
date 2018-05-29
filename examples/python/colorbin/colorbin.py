@@ -79,7 +79,7 @@ class ColorBin(Network):
 if __name__ == "__main__":
     sme = SME()
     result = []
-    sme.network = ColorBin("", "ColorBin", result)
+    sme.network = ColorBin("ColorBin", result)
     sme.network.clock(352686)
     #sme.network.clock(20)
 

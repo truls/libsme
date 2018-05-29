@@ -25,6 +25,6 @@ class AddOne(Network):
 if __name__ == "__main__":
     sme = SME()
     result = [0]
-    sme.network = AddOne("", "AddOne", result)
+    sme.network = AddOne("AddOne", result)
     sme.network.clock(100)
     print("Final result was ", result[0])
