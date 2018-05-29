@@ -201,6 +201,7 @@ data BusChan
 
 data BusInst  = BusInst
   { chans       :: MM.Map Ident BusChan
+  , exposedInst :: Bool
   , busInstName :: Ref
   , ref         :: Ref -- ^Reference to the bus that this was instantiated from
   , readers     :: [Int] -- ^ Processes connected to the read end of the bus
@@ -451,24 +452,23 @@ evalUnOp _ _                      =
 
 propagateBus :: BusInst -> SimM  [Value]
 propagateBus BusInst {..}
- = do
   --liftIO $ putStrLn ("Propagating bus " ++ show ref)
+ = do
   let vs = MM.elems chans
-  forM
-    vs
-    (\case
-       LocalChan {localRead = readRef, localWrite = writeRef} ->
-         liftIO $
+  catMaybes <$>
+    forM
+      vs
+      (\case
+         LocalChan {localRead = readRef, localWrite = writeRef} ->
+           liftIO $
             --traceM ("Bus looks like " ++ show name)
-          do
-           rw <- readIORef writeRef
-           --rv <- readIORef readRef
-           writeIORef readRef rw
-           --putStrLn ("Bus read value was " ++ show rv)
-           return rw
-       ExternalChan {extRead = readEnd}
+            do
+             rw <- readIORef writeRef
+             writeIORef readRef rw
+             return Nothing
+         ExternalChan {extRead = readEnd}
           -- External channels are propagated by the c-wrapper
-        -> liftIO $ peek readEnd)
+          -> liftIO $ Just <$> peek readEnd)
 
 
 -- | Returns a new and globally unique integer every time its called.
@@ -579,7 +579,7 @@ mkBusInst exposed n bs busRef = do
         busPtr <- liftIO $ mkExtBus ptr (pprrString n)
         toExtChans exposed busPtr bs
       Nothing -> toBusChans bs
-  let res = BusInst (MM.fromList (sortOn fst chans)) n busRef [] []
+  let res = BusInst (MM.fromList (sortOn fst chans)) exposed n busRef [] []
   addBusInst res
   return res
   where
@@ -594,6 +594,8 @@ mkBusInst exposed n bs busRef = do
                if isPuppet
                  then liftIO $ do
                         chan <- mkExtChan bptr (toString i) ty
+                        -- Set initial value of external channel
+                        poke (writePtr chan) defVal
                         ExternalChan i <$> newIORef defVal <*>
                           pure (writePtr chan) <*>
                           pure (readPtr chan)
@@ -1208,7 +1210,7 @@ writeCsvHeader = do
   heads <-
     sort <$>
     concatForM
-      buses
+      (filter exposedInst buses)
       (\BusInst {chans = chans, busInstName = bn}
           -- TODO: Add a lookupGlobalRef function to avoid this
         ->
