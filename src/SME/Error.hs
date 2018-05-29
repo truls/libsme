@@ -10,6 +10,7 @@ module SME.Error
   , TypeCheckErrors(..)
   , RenderError(..)
   , NameMap
+  , bad
   ) where
 
 import           Control.Exception
@@ -83,6 +84,9 @@ data TypeCheckErrors where
 
 class (IsMap map, Show ex) => RenderError map ex where
   renderError :: map -> ex -> String
+
+bad :: String -> a
+bad = throw . InternalCompilerError
 
 --instance (IsMap m) => RenderError m TypeCheckErrors where
 instance RenderError (M.Map String Ref) TypeCheckErrors where

@@ -586,9 +586,7 @@ ensureSingleRef :: (References a) => a -> Ident
 ensureSingleRef r = go $ refOf r
   where
     go (i N.:| []) = i
-    go _ =
-      throw $
-      InternalCompilerError "Compound names should not occur at this point"
+    go _           = bad "Compound names should not occur at this point"
 
 -- reduceRange :: (MonadRepr s m) => Range -> m (Integer, Integer)
 -- reduceRange Range {..} = (,) <$> exprReduceToInt lower <*> exprReduceToInt upper

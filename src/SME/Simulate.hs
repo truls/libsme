@@ -120,18 +120,16 @@ instance (MonadRepr SimExt) SimM where
                 --trace "GOt back ParamDef" $
                ->
                 case ref of
-                  (_ :| []) ->
-                    throw $
-                    InternalCompilerError "Bus reference is a single name"
+                  (_ :| [])   -> bad "Bus reference is a single name"
                   (r' :| rs') -> withScope r' (go (N.fromList (rs' ++ is)))
               _
               -- If first name component doesn't resolve to a possible compound
               -- name in current scope, it probably refers to a top-level
               -- construct, so we look again in that
                -> trace "lookup recursing" $ withScope i (go (N.fromList is))
-          Nothing ->
+          Nothing
             --trace "lookup recursing2" $
-            withScope i (go (N.fromList is))
+           -> withScope i (go (N.fromList is))
 
 
 data Context = Context
@@ -273,7 +271,7 @@ evalStm If {..} = do
       c <-
         evalExpr e >>= \case
           (BoolVal v) -> pure v
-          _ -> throw $ InternalCompilerError "Type error in if"
+          _ -> bad "Type error in if"
       if c
         then do
           mapM_ evalStm ss
@@ -306,19 +304,19 @@ evalStm Trace {..} =
           vals <- map pprr <$> mapM evalExpr subs
           let res = mconcat $ zipWith (<>) s (vals <> [T.empty])
           liftIO $ T.putStrLn res
-    _ -> throw $ InternalCompilerError "Not a string lit"
+    _ -> bad "Not a string lit"
 
 evalStm Assert {..} =
   unlessM (getConfig noAsserts) $ do
     str <-
       case descr of
-        Nothing -> return Nothing
+        Nothing                                -> return Nothing
         Just LitString {stringVal = stringVal} -> return (Just stringVal)
-        _ -> throw $ InternalCompilerError "Not a string lit"
+        _                                      -> bad "Not a string lit"
     evalExpr cond >>= \case
       (BoolVal False) -> throw $ AssertionError cond (T.unpack <$> str)
       (BoolVal True) -> return ()
-      _ -> throw $ InternalCompilerError "Assertion not a boolean"
+      _ -> bad "Assertion not a boolean"
 
 evalStm For {..} = do
   start <- evalExpr from
@@ -358,14 +356,14 @@ evalStm For {..} = do
 
 evalStm Break {} =
   getBreakGuard >>= \case
-    Nothing -> throw $ InternalCompilerError "Break called outside loop"
+    Nothing -> bad "Break called outside loop"
     Just b -> setValueVtab (identToName b) (toValue True)
 
 evalStm _ = error "Simulation of all statements not implemented yet"
 
 valueToBoolE :: Value -> SimM Bool
 valueToBoolE (BoolVal v) = pure v
-valueToBoolE _           = throw $ InternalCompilerError "Expected bool"
+valueToBoolE _           = bad "Expected bool"
 
 -- | Evaluates an expression
 evalExpr :: Expr -> SimM Value
@@ -432,8 +430,7 @@ evalBinOp NeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i /= j
 evalBinOp NeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i /= j
 evalBinOp NeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i /= j
 evalBinOp o v1 v2 =
-  throw $
-  InternalCompilerError
+  bad
     ("Unsupported types for binary operator " ++
      show o ++ " " ++ show v1 ++ " " ++ show v2)
 
@@ -446,8 +443,7 @@ evalUnOp UnMinus {} (SingleVal i) = pure $ SingleVal $ negate i
 evalUnOp UnMinus {} (DoubleVal i) = pure $ DoubleVal $ negate i
 evalUnOp NotOp {} (BoolVal i)     = pure $ BoolVal $ not i
 evalUnOp NegOp {} (IntVal i)      = pure $ IntVal $ complement i
-evalUnOp _ _                      =
-  throw $ InternalCompilerError "Unsupported types for unary operator"
+evalUnOp _ _                      = bad "Unsupported types for unary operator"
 
 
 propagateBus :: BusInst -> SimM  [Value]
@@ -602,7 +598,7 @@ mkBusInst exposed n bs busRef = do
                  else liftIO $
                       LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
                       newIORef defVal
-           _ -> throw $ InternalCompilerError "Illegal bus chan")
+           _ -> bad "Illegal bus chan")
     toBusChans :: BusShape -> SimM [(Ident, BusChan)]
     toBusChans bs' =
       mapM
@@ -620,7 +616,7 @@ genDefaultValue Nothing ty = mkInitialValue ty
 genDefaultValue (Just l) _ = return $ toValue l
 
 mkInitialValue :: Typeness -> SimM Value
-mkInitialValue Untyped = throw $ InternalCompilerError "Untyped value in sim"
+mkInitialValue Untyped = bad "Untyped value in sim"
 mkInitialValue (Typed t) = go t
   where
     go Signed {} = return $ toValue (0 :: Int)
@@ -635,8 +631,8 @@ mkInitialValue (Typed t) = go t
           Just e ->
             evalConstExpr e >>= \case
               IntVal v -> pure (fromIntegral v)
-              _ -> throw $ InternalCompilerError "Non-integer array length"
-          Nothing -> throw $ InternalCompilerError "No array len" -- FIXME
+              _ -> bad "Non-integer array length"
+          Nothing -> bad "No array len" -- FIXME
       toValue <$>
         replicateM len (mkInitialValue (typeOf innerTy))
 
@@ -682,9 +678,8 @@ ensureAcyclic g =
     a ->
       let labs = (map . map) (lab (unInstGraph g)) a
           labs' = (map . map) (fromMaybe (Ident "unknown" noLoc)) labs
-      in throw $
          -- TODO: This should have its own error type
-         InternalCompilerError
+      in bad
            ("Instantiation cycles formed by entities " ++
             unwords (map show labs'))
 
@@ -697,7 +692,7 @@ instantiates instantiator = mapMaybeM go
       td <- lookupTopDef instantiated
       when (instantiator == instantiated) $
         -- TODO: We should make sure this is not the case in the typechecker
-        throw $ InternalCompilerError "Entity cannot instantiate itself"
+        bad "Entity cannot instantiate itself"
         -- TODO: Better error
       return $ Just (nodeId (topExt td), instantiated)
     go _ = return Nothing
@@ -719,7 +714,7 @@ getNetworkEntry = do
   entryProc <-
     case instOrder of
       (x:_) -> pure x
-      []    -> throw $ InternalCompilerError "Network contains no processes"
+      []    -> bad "Network contains no processes"
   -- liftIO $ prettyPrint (unInstGraph graph)
   -- liftIO $ print $ isConnected (unInstGraph graph)
   -- liftIO $ print $ topsort (unInstGraph graph)
@@ -802,7 +797,7 @@ lookupCurVtableE i =
   --traceM ("LoockupCurVtaleE called with " ++ show i)
   lookupCurVtable i >>= \case
     Just v -> return v
-    Nothing -> throw $ InternalCompilerError "Undefined name during simulation"
+    Nothing -> bad "Undefined name during simulation"
 
 setInVtab :: Ident -> SimRef -> SimM ()
 setInVtab i v = getCurVtable >>= pure . M.insert i v >>= putCurVtable
@@ -811,7 +806,7 @@ getInVtab ::  Ident -> SimM SimRef
 getInVtab i =
   (M.lookup i <$> getCurVtable) >>= \case
     Just v -> pure v
-    Nothing -> throw $ InternalCompilerError ("Value not found " ++ show i)
+    Nothing -> bad ("Value not found " ++ show i)
 
 -- | Sets a value in current VTab
 setValueVtab :: Name -> Value -> SimM ()
@@ -822,8 +817,8 @@ setValueVtab Name {parts = parts} v' = go parts
         IdentName {ident = i} ->
           getInVtab i >>= \case
             MutVal _ maxV -> setInVtab i $ MutVal v' (max maxV (absValue v'))
-            BusVal _ -> throw $ InternalCompilerError "bus as value"
-            _ -> throw $ InternalCompilerError "immutable value"
+            BusVal _ -> bad "bus as value"
+            _ -> bad "immutable value"
         ArrayAccess {..} -> do
           i <- ensureNamePartIdent namePart
           idx <- ensureIndex index
@@ -831,21 +826,20 @@ setValueVtab Name {parts = parts} v' = go parts
             MutVal (ArrayVal l v) m ->
               if idx > (fromIntegral l - 1)
                 -- TODO: Dedicated error type
-                then throw $ InternalCompilerError "Index out of bounds"
+                then bad "Index out of bounds"
                 else setInVtab i $
                      MutVal
                        (ArrayVal l (v // [(idx, v')]))
                        (max v' (absValue m))
-            ConstVal ArrayVal {} ->
-              throw $ InternalCompilerError "immutable array"
-            _ -> throw $ InternalCompilerError "Non-array value"
+            ConstVal ArrayVal {} -> bad "immutable array"
+            _ -> bad "Non-array value"
     go (i :| [i2]) = do
       i' <- ensureNamePartIdent i
       i2' <- ensureNamePartIdent i2
       getInVtab i' >>= \case
         BusVal v -> setBusVal i2' v v'
-        _ -> throw $ InternalCompilerError "compund name not a bus"
-    go _ = throw $ InternalCompilerError "Compound names not supported"
+        _ -> bad "compund name not a bus"
+    go _ = bad "Compound names not supported"
 
 -- FIXME: We should probably introduce an intermediate language to avoid
 -- handling this here
@@ -853,13 +847,12 @@ ensureIndex :: ArrayIndex -> SimM Int
 ensureIndex (Index e) = evalExpr e >>= \case
   IntVal v -> return (fromIntegral v)
   _ -> -- TODO: Check this in the typechecker
-    throw $ InternalCompilerError "Non-integer array index"
-ensureIndex Wildcard = throw $ InternalCompilerError "Wildcard index"
+    bad "Non-integer array index"
+ensureIndex Wildcard = bad "Wildcard index"
 
 ensureNamePartIdent :: NamePart -> SimM Ident
 ensureNamePartIdent IdentName {..} = return ident
-ensureNamePartIdent ArrayAccess {} =
-  throw $ InternalCompilerError "ArrayAccess array NamePart"
+ensureNamePartIdent ArrayAccess {} = bad "ArrayAccess array NamePart"
 
 getValueVtab :: Name -> SimM Value
 getValueVtab Name {parts = parts} = go parts
@@ -870,19 +863,19 @@ getValueVtab Name {parts = parts} = go parts
           getInVtab i >>= \case
             MutVal v _ -> pure v
             ConstVal v -> pure v
-            _ -> throw $ InternalCompilerError "not readable"
+            _ -> bad "not readable"
         ArrayAccess {..} -> do
           i <- ensureNamePartIdent namePart
           idx <- ensureIndex index
           getInVtab i >>= \case
             MutVal (ArrayVal l v) _ -> readArray idx l v
             ConstVal (ArrayVal l v) -> readArray idx l v
-            _ -> throw $ InternalCompilerError "Non-array value"
+            _ -> bad "Non-array value"
       where
         readArray idx l v =
           if idx > (fromIntegral l - 1)
                  -- TODO: Dedicated error type
-            then throw $ InternalCompilerError "Index out of bounds"
+            then bad "Index out of bounds"
             else return $ v ! fromIntegral idx
     go (p :| [p2])
       -- FIXME: This is a hack
@@ -891,11 +884,8 @@ getValueVtab Name {parts = parts} = go parts
       i2 <- ensureNamePartIdent p2
       getInVtab i >>= \case
         BusVal v -> getBusVal i2 v
-        _ ->
-          throw $
-          InternalCompilerError
-            "Only buses are accessible through compound names"
-    go _ = throw $ InternalCompilerError "Compound names not supported"
+        _ -> bad "Only buses are accessible through compound names"
+    go _ = bad "Compound names not supported"
 
 -- valAToSimRef :: Value -> SimM SimRef
 -- valToSimRef = undefined
@@ -914,7 +904,7 @@ setBusVal i BusInst {..} v =
       liftIO $ do
         modifyIORef' maxBusVal (`max` absValue v)
         poke write v
-    Nothing -> throw $ InternalCompilerError "undefined bus channel"
+    Nothing -> bad "undefined bus channel"
 
 getBusVal :: Ident -> BusInst -> SimM Value
 getBusVal i BusInst {..} = do
@@ -927,13 +917,13 @@ getBusVal i BusInst {..} = do
       liftIO $ modifyIORef' maxBV (`max` res)
       trace ("Reading external channel " ++ show res ++ " " ++ show i) $
         return res
-    Nothing -> throw $ InternalCompilerError "undefined bus channel"
+    Nothing -> bad "undefined bus channel"
 
 -- | Converts a simulator value reference to a value.
 getValue :: SimRef -> SimM Value
 getValue (MutVal v _ ) = return v
 getValue (ConstVal v)  = return v
-getValue _ = throw $ InternalCompilerError "SimRef does not have a simple value"
+getValue _             = bad "SimRef does not have a simple value"
 
 evalConstExpr :: Expr -> SimM Value
 evalConstExpr PrimLit {..} = return $ toValue lit
@@ -954,7 +944,7 @@ evalConstExpr _ = error "TODO: Better constexpr evaluation"
 --   e <- gets (ext :: SimEnv -> SimExt)
 --   case M.lookup b (curVtable e) of
 --     Just (BusVal r) -> return r
---     Nothing -> throw $ InternalCompilerError "Undefined bus during simulation"
+--     Nothing -> bad "Undefined bus during simulation"
 
 
 --getBusReference
@@ -997,13 +987,13 @@ resolveBusParam = go 0
     go n (r :| []) =
       lookupCurVtableE r >>= \case
         BusVal res -> return (n, res)
-        _ -> throw $ InternalCompilerError "Expected bus"
+        _ -> bad "Expected bus"
     go _ (r :| rs) =
       lookupCurVtableE r >>= \case
         InstVal instv
         --inst <- liftIO $ readIORef r
          -> withVtable_ (valueTab instv) $ go (instNodeId instv) (N.fromList rs)
-        _ -> throw $ InternalCompilerError "Expected instance"
+        _ -> bad "Expected instance"
 
 -- | Entity instantiation function. Recursively walks through the instantiation
 -- hierachy. Takes a pre-populated symbol table and an entity as argument
@@ -1099,16 +1089,16 @@ wireInst (instDefName, procInst@ProcInst {instNodeId = myNodeId})
                  (nid, ref') <-
                    resolveBusParam =<< refOf <$> exprReduceToName parVal
                  case busState of
-                   Input -> addLink (ProcLink (myNodeId, nid, "foo", ref'))
+                   Input  -> addLink (ProcLink (myNodeId, nid, "foo", ref'))
                    Output -> addLink (ProcLink (nid, myNodeId, "foo", ref'))
-                   _ -> throw $ InternalCompilerError "BusState invalid here"
+                   _      -> bad "BusState invalid here"
                  return $ Just (parName, BusVal ref'))
           parList
           actual
       let vtab = (valueTab :: ProcInst -> VTable) procInst
           vtab' = foldr (uncurry M.insert) vtab paramVals
       return $ procInst {valueTab = vtab'}
-    _ -> throw $ InternalCompilerError "Expected instDef"
+    _ -> bad "Expected instDef"
 
 -- | Sets up the simulation sets up the simulation environment
 setupSimEnv :: Maybe SmeCtxPtr -> SimM ()
