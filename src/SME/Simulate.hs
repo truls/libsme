@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE DuplicateRecordFields      #-}
 {-# LANGUAGE FlexibleContexts           #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -44,7 +43,7 @@ import           Control.Monad.Except              (MonadError)
 import           Control.Monad.Extra               (concatForM, concatMapM,
                                                     mapMaybeM, unlessM, whenM)
 import           Control.Monad.IO.Class            (MonadIO, liftIO)
-import           Control.Monad.State               (MonadState, get, gets,
+import           Control.Monad.State.Strict        (MonadState, get, gets,
                                                     modify)
 import           Data.Graph.Inductive.Graph        (LNode, lab, mkGraph)
 import           Data.Graph.Inductive.PatriciaTree (Gr)
@@ -165,7 +164,7 @@ newtype InstGraph = InstGraph
 
 data SimExt
   = EnvExt { labelSource :: !Int
-           , curVtable   :: VTable
+           , curVtable   :: !VTable
            , links       :: [ProcLink]
            , puppetMode  :: Maybe SmeCtxPtr
            , simProcs    :: [IORef ProcInst]
@@ -236,8 +235,8 @@ data ProcInst = ProcInst
 type VTable =  M.HashMap Ident SimRef
 
 data SimRef
-  = MutVal { _cur   :: Value
-           , maxVal :: Value }
+  = MutVal { _cur   :: !Value
+           , maxVal :: !Value }
   | ConstVal Value
   | InstVal ProcInst
   | BusVal BusInst
@@ -1163,7 +1162,7 @@ setupSimEnv ptr = do
   -- _ <- replicateM 10 $ runSimulation procs buses
 
 modifyIORefM :: (MonadIO m) => (a -> m a) -> IORef a -> m ()
-modifyIORefM !f r = liftIO (readIORef r) >>= f >>= (liftIO . writeIORef r)
+modifyIORefM f r = liftIO (readIORef r) >>= f >>= (liftIO . writeIORef r)
 
 runSimulation :: [IORef ProcInst] -> [BusInst] -> SimM ()
 runSimulation procs buses = do

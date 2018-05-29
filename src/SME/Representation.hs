@@ -54,7 +54,7 @@ import           Control.Monad.Except            (ExceptT, MonadError,
                                                   runExceptT)
 import           Control.Monad.Identity          (Identity, runIdentity)
 import           Control.Monad.IO.Class
-import           Control.Monad.State             (MonadState, StateT, gets,
+import           Control.Monad.State.Strict      (MonadState, StateT, gets,
                                                   modify, runStateT)
 import           Data.Char                       (isLetter, toLower)
 import           Data.Data                       (Data)
@@ -407,7 +407,7 @@ data Void = Void
 data Value
   = IntVal !Integer
   | ArrayVal !Int
-             (Vector Value)
+             !(Vector Value)
   | BoolVal !Bool
   | DoubleVal !Double
   | SingleVal !Float
@@ -724,7 +724,7 @@ instance Functor BaseEnv where
 data BaseEnv a = BaseEnv
   { defs    :: M.HashMap String (BaseTopDef a) -- ^ Top-level symbol table
   --, curEnv :: BaseTopDef a -- ^ Scope of currently used definition
-  , curEnv  :: Ident -- TODO: Probably change to Maybe Ref
+  , curEnv  :: !Ident -- TODO: Probably change to Maybe Ref
   , used    :: S.Set Ident -- ^ Instantiated definitions
   , typeCtx :: Maybe Typeness -- TODO: Replace with a reader monad env
   , config  :: Config
