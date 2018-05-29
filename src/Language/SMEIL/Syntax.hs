@@ -239,10 +239,10 @@ instance Located Range where
   locOf Range {..} = locOf loc
 
 data Process = Process
-  { name   :: Ident -- ^Name of process
-  , params :: [Param] -- ^Process parameters
-  , decls  :: [Declaration] -- ^Process declarations
-  , body   :: [Statement] -- ^Process body
+  { name   :: Ident -- ^ Name of process
+  , params :: [Param] -- ^ Process parameters
+  , decls  :: [Declaration] -- ^ Process declarations
+  , body   :: [Statement] -- ^ Process body
   , sync   :: Bool -- ^ Process is synchronous
   , loc    :: SrcLoc
   } deriving (Eq, Ord, Show, Data, Typeable)
