@@ -53,9 +53,7 @@ library:
   - uniplate >= 1.6.12
   - megaparsec >= 6.3.0
   - bimap >= 0.3.3
-  # Remove from stack.yaml once in stackage
   - mainland-pretty >= 0.7
-  # Remove from stack.yaml once in stackage
   - srcloc >= 0.5.1.2
   - exceptions >= 0.8.3
   - hashable >= 1.2.6.1
