@@ -22,6 +22,7 @@ module Language.SMEIL.Parser.Lexer
 
 import           Control.Applicative         (empty)
 import           Control.Monad               (when)
+import           Data.Char                   (isLatin1)
 import           Data.Monoid                 ((<>))
 import qualified Data.Text                   as T
 import           Text.Megaparsec
@@ -79,11 +80,13 @@ float = lexeme $ L.signed spaceConsumer L.float
 
 stringLit :: Parser T.Text
 stringLit =
-  T.pack <$> lexeme
+  T.pack <$>
+  lexeme
     (between (char '"') (char '"' <?> "end of string") (many strChar))
   where
-    strChar = satisfy (\c -> (c /= '"') && (c /= '\\') && (c > '\026'))
-      <|> (char '\\' >> char '"')
+    strChar =
+      satisfy (\c -> (c /= '"') && (c /= '\\') && (c > '\026') && isLatin1 c) <|>
+      (char '\\' >> char '"')
 
 literal :: Parser S.Literal
 literal =
