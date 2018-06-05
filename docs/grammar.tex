@@ -1,0 +1,250 @@
+\documentclass{article}
+
+\usepackage[utf8x]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{syntax}
+\usepackage{booktabs}
+\usepackage{multicol}
+
+\title{SMEIL Language Reference}
+\date{}
+
+\setlength{\grammarindent}{11em} % increase separation between LHS/RHS
+
+\begin{document}
+\maketitle
+
+\section*{Grammar}
+\begin{grammar}
+  <module> ::= \{ <import-stm> \} <entity> \\ \{ <entity> \}
+
+  <import-stm> ::= `import' <import-name> <qualified-specifier> `;'
+  \alt `from' <import-name> \\ `import' <ident> \{ `,' <ident> \} <qualified-specifier>
+  `;'
+
+  <import-name> ::= <ident> \{ `.' <ident> \}
+
+  <qualified-specifier> ::= \{ `as' <ident> \}
+
+  <entity> ::= <network>
+  \alt <process>
+
+  <network> ::= `network' <ident> `(' [ <params> ] `)' \\`{' <network-decl> `}'
+
+  <process> ::= [ `sync' | `async' ] `proc' <ident> \\ `(' [
+             <params> ] `)' \{ <declaration> \} `{' \{ <statement> \} `}'
+
+  <network-decl> ::= <instance>
+  \alt <bus-decl>
+  \alt <const-decl>
+  \alt <gen-decl>
+
+  <declaration> ::= <var-decl>
+  \alt <const-decl>
+  \alt <bus-decl>
+  \alt <enum>
+  %\alt <function>
+  \alt <instance>
+  \alt <generate>
+  
+  <params> ::= <param> \{ , <param> \}
+
+  <param> ::= \{ `[' \{ <expression> \} `]' \} <direction> <ident>
+
+  <direction> ::= `in' (input signal)
+  \alt `out' (output signal)
+  \alt `const' (constant input value)  
+
+   <var-decl> ::= `var' <ident> `:' \\ <type-name> [ `=' <expression> ] [ <range> ] `;'
+
+  <range> ::= `range' <expression> `to' <expression>
+
+  <const-decl> ::= `const' <ident> `:' <type-name> [ `=' <expression> ] `;'
+
+  <bus-decl> ::= [ `exposed' ] `bus' <ident> \\ `\{' <bus-signal-decls> `\}'  `;'
+
+% <bus-decl> ::= [ `exposed' ] [ `unique' ] `bus' <ident> \\ `\{' <bus-signal-decls> `\}'  `;'
+
+<bus-signal-decls> ::= <bus-signal-decl> \{ <bus-signal-decl> \}
+
+<bus-signal-decl> ::= <ident> `:' <type> [ `=' <expression> ] [ <range> ] `;'
+
+  <instance> ::= `instance' <instance-name> `of' <ident> \\`(' [ <param-map> { `,' <param-map> } ]`)' `;'
+
+  <instance-name> ::= <ident> `[' <expression> `]' (indexed instance)
+  \alt <ident> (named instance)
+  \alt `_' (anonymous instance)
+
+  <param-map> ::= [ <ident> `:' ] <expression>
+
+  <gen-decl> ::= `generate' <ident> `=' <expression> `to' <expression> \\ `{' \{ <network-decl> \} `}'
+  <statement> ::= <name> `=' <expression> `;' (assignment)
+  \alt `if' `(' <expression> `)' `{' \{ <statement> \} `}' \\ \{ <elif-block>
+    \} [ <else-block> ]
+  \alt `for' <ident> `=' <expression> `to' <expression> \\ `{' \{ <statement> \} `}'
+  %\alt `while' <expression> `{' \{ <statement> \} `}'
+  \alt `switch' <expression> \\ `{' <switch-case> \{ <switch-case> \}
+  [ `default' `{' <statement> \{ <statement> \} `}' ] `}'
+  \alt `trace' `(' <format-string> \{ `,' <expression> \} )`;'
+  \alt `assert' `(' <expression> [ `,' <string> ] )`;'
+  %\alt `barrier' `;'
+  \alt `break' `;'
+  %\alt `return' [ <expression> ] `;'
+
+  <switch-case> ::= `case' <expression> `{' \{ <statement> \} `}'
+
+  <elif-block> ::= `elif `(' <expression> `)' `{' \{ <statement> \} `}'
+
+  <else-block> ::= `else' `{' \{ <statement> \} `}'
+
+  <format-string> ::= `"' \{ <format-string-part> \} `"' `;'
+  
+  <format-string-part> ::= `{}' (placeholder string)
+  \alt <string-char>
+
+  <expression> ::= <name>
+  \alt <literal>
+  \alt <expression> <bin-op> <expression>
+  \alt <un-op> <expression>
+  %\alt <name> `(' \{ <expression> \}  `)' (function call)
+  \alt `(' <expression> `)'
+
+  <bin-op> ::= `+' (addition)
+  \alt `-' (subtraction)
+  \alt `*' (multiplication)
+  \alt `/' (division)
+  \alt `\%' (modulo)
+  \alt `==' (equal)
+  \alt `!=' (not equal)
+  \alt `\verb!<<!' (shift left)
+  \alt `\verb!>>!' (shift right)
+  \alt `<' (less than)
+  \alt `>' (greater than)
+  \alt `>=' (greater than or equal)
+  \alt `<=' (less than or equal)
+  \alt `\&' (bitwise-and)
+  \alt `|' (bitwise-or)
+  \alt `^' (bitwise-xor)
+  \alt `\&\&' (logical conjunction)
+  \alt `||' (logical disjunction)
+
+  <un-op> ::= `-' (negation)
+  \alt `+' (identity)
+  \alt `!' (logical negation)
+  \alt `~' (bitwise-not)
+
+  <literal> ::= <integer>
+  \alt <floating>
+  \alt `"'\{ <string-char> \}`"' (string-literal)
+  \alt `[' <integer> \{ `,' <integer> \} `]' (array literal)  
+  % TODO: Temporary limitation
+  %\alt `[' <expression> \{ `,' <expression> \} `]' (array literal)
+  \alt `true'
+  \alt `false'
+  \alt <special-literal>
+
+  <special-literal> ::= `\'U' (Undefined value)
+
+  <type> ::= `i' <integer> (signed integer)
+  \alt `int' (arbitrary-width signed integer)
+  \alt `u' <integer> (unsigned integer)
+  \alt `uint' (arbitrary-width unsigned integer)
+  \alt `f32' (single-precision floating point)
+  \alt `f64' (double-precision floating point)
+  \alt `bool' (boolean value)
+  \alt `[' [ <expression> ] `]' <type> (array of type)
+
+  <ident> ::= <letter> \{ ( <letter> | <number> | `_' | `-' ) \} (identifier)
+
+  % TODO: Make more specific
+  <name> ::= <ident>
+  \alt <name> `.' <name> (hierarchical accessor)
+  \alt <name> `[' <array-index> `]' (array element access)
+
+  <array-index> :: `*' (wildcard)
+  \alt <expression> (element index)
+
+  <integer> ::= <number> \{ <number> \} (decimal number)
+  \alt `0x' <hex-digit> \{ <hex-digit> \} (hexadecimal number)
+  \alt `0o' <octal-digit> \{ <octal-digit> \} (octal number)
+
+  <floating> ::= \{ <number> \} `.' <number> \{ <number> \}
+  
+  <number> ::= `0' - `9'
+
+  <letter> ::= `a' - `z'
+  \alt `A' - `Z'
+
+  <hex-digit> ::= <number>
+  \alt `a' - `f'
+  \alt `A' - `F'
+
+  <octal-digit> ::= `0' - '8'
+
+  <string-char> ::= (ISO-8859-1 char with value > 26)
+
+\end{grammar}
+
+\section*{Operator precedence}
+\begin{centering}
+\begin{tabular}{cc}
+  \toprule
+  \textbf{Precedence} & \textbf{Operators}\\
+  \midrule
+  0 & \verb!+! \verb!-! \verb|!| \verb!~! (unary)\\
+  1 & * / \% \\
+  2 & + - \\
+  3 & \verb!<<! \verb!>>! \\
+  4 & < > <= >= \\
+  5 & == != \\
+  6 & \verb!&! \verb!^! \verb!|! \\
+  7 & \verb!&&! \\
+  8 & \verb!||! \\
+  \bottomrule
+\end{tabular}
+\end{centering}
+
+\section*{Keywords}
+\begin{multicols}{3}
+  \begin{itemize}
+  \item as
+  \item async
+  \item barrier
+  \item break
+  \item bus
+  \item case
+  \item const
+  \item default
+  \item elif
+  \item else
+  \item enum
+  \item exposed
+  \item for
+  \item from
+  \item func
+  \item generate
+  \item if
+  \item import
+  \item in
+  \item instance
+  \item network
+  \item of
+  \item out
+  \item proc
+  \item range
+  \item return
+  \item switch
+  \item sync
+  \item to
+  \item unique
+  \item var
+  \item where
+  \end{itemize}
+\end{multicols}
+
+\end{document}
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: t
+%%% End:
