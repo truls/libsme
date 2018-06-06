@@ -34,12 +34,12 @@ sync proc md5(in input)
         0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
                       ];
 
-    var h0: u32 = 0;
-    var h1: u32 = 0;
-    var h2: u32 = 0;
-    var h3: u32 = 0;
+    var h0: u32;
+    var h1: u32;
+    var h2: u32;
+    var h3: u32;
 
-    var w: [16]u32;
+    var w: [16]u32 = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
 
     var a: u32;
     var b: u32;
