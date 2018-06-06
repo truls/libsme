@@ -213,8 +213,8 @@ statement =
       where
         switchCase =
           reserved "case" >>
-          (,) <$> expression <*> braces (some statement) <?> "switch case"
-        defaultCase = reserved "default" *> braces (some statement)
+          (,) <$> expression <*> braces (many statement) <?> "switch case"
+        defaultCase = reserved "default" *> braces (many statement)
     traceStm =
       reserved "trace" >>
       parens
