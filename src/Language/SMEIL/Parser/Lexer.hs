@@ -135,7 +135,6 @@ reservedWords =
   , "proc"
   , "range"
   , "return"
-  , "simulation"
   , "switch"
   , "sync"
   , "to"
