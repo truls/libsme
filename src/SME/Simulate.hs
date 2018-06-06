@@ -593,7 +593,7 @@ mkBusInst exposed n bs busRef = do
       forM
         (unBusShape bs')
         (\case
-           (i, (oTy@(Typed ty), lit, _)) -> do
+           (i, (Typed ty, lit, _)) -> do
              defVal <- genDefaultValue lit
              (i, ) <$>
                if isPuppet
@@ -613,7 +613,7 @@ mkBusInst exposed n bs busRef = do
     toBusChans bs' =
       forM
         (unBusShape bs')
-        (\(i, (ty, lit, _)) -> do
+        (\(i, (_, lit, _)) -> do
            defVal <- genDefaultValue lit
            (i, ) <$>
              liftIO
