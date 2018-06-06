@@ -102,35 +102,47 @@ peekIntVal signedness f p = do
     Unsigned -> res
 {-# INLINE peekIntVal #-}
 
+setValDef :: Bool -> Ptr R.Value -> IO ()
+setValDef b f = {# set Value.undef #} f (fromIntegral $ fromEnum b)
+
 instance Storable R.Value where
   sizeOf _ = {# sizeof Value #}
   alignment _ = {# alignof Value #}
 
   poke p value =
       case value of
-        R.IntVal i ->
+        R.IntVal i -> do
           pokeIntVal Signed {# get Value.value.integer #} p i
+          setValDef True p
         R.SingleVal i -> do
           {# set Value.value.f32 #} p $ CFloat i
+          setValDef True p
         R.DoubleVal i -> do
           {# set Value.value.f64 #} p $ CDouble i
+          setValDef True p
         R.BoolVal i -> do
           {# set Value.value.boolean #} p $ i
+          setValDef True p
         R.ArrayVal _ _ -> error "Arrays not supported"
+        R.UndefVal ->
+          setValDef False p
   {-# INLINE poke #-}
 
   peek p =
-      ((toEnum . fromIntegral) <$> ({# get Value.type #} p)) >>= \case
-        SmeInt ->
-          R.IntVal <$> peekIntVal Signed {# get Value.value.integer #} p
-        SmeUint ->
-          R.IntVal <$> peekIntVal Unsigned {# get Value.value.integer #} p
-        SmeFloat -> do
-          (CFloat f) <- ({# get Value.value.f32 #} p)
-          return $ R.SingleVal f
-        SmeDouble -> do
-          (CDouble f) <- ({# get Value.value.f64 #} p)
-          return $ R.DoubleVal f
-        SmeBool ->
-          R.BoolVal <$> ({# get Value.value.boolean #} p)
+      (\x -> if x == 0 then False else True) <$> ({# get Value.undef #} p) >>= \case
+        True -> pure R.UndefVal
+        False ->
+          ((toEnum . fromIntegral) <$> ({# get Value.type #} p)) >>= \case
+           SmeInt ->
+             R.IntVal <$> peekIntVal Signed {# get Value.value.integer #} p
+           SmeUint ->
+             R.IntVal <$> peekIntVal Unsigned {# get Value.value.integer #} p
+           SmeFloat -> do
+             (CFloat f) <- ({# get Value.value.f32 #} p)
+             return $ R.SingleVal f
+           SmeDouble -> do
+             (CDouble f) <- ({# get Value.value.f64 #} p)
+             return $ R.DoubleVal f
+           SmeBool ->
+             R.BoolVal <$> ({# get Value.value.boolean #} p)
   {-# INLINE peek #-}

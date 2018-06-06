@@ -25,7 +25,9 @@ ghc-options:
   - -Wnoncanonical-monadfail-instances
   - -Wredundant-constraints
   - -Wincomplete-uni-patterns
-  - -O2
+  #- -Wincomplete-record-updates
+  #- -O0
+  #- -O2
 
 cc-options:
   - -g

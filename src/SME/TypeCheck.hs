@@ -44,8 +44,8 @@ import           SME.Warning
 trace :: String -> a -> a
 trace _ = id
 
--- traceM :: (Applicative f) => String -> f ()
--- traceM _ = pure ()
+traceM :: (Applicative f) => String -> f ()
+traceM _ = pure ()
 
 -- * Type checking monad and data structures for holding type checking state
 
@@ -157,7 +157,8 @@ trackUsage t r act
         Nothing
           -- At this point we should only meet locally declared buses as all
           -- has been added by the parameter type inference function.
-         ->
+         -> do
+          direct <- isTopDef r
           setUsedBus
             bRef
             -- TODO: Account for the case where we reference a bus declared in
@@ -165,14 +166,15 @@ trackUsage t r act
             ( refOf $ nameOf bus
             , if t == Load
                 then Input
-                else Output)
+                else Output
+            , direct)
         Just a ->
           forM_
             (map (t, ) a)
             (\case
-               (Load, (_, Input)) -> return ()
+               (Load, (_, Input, _)) -> return ()
                (Load, _) -> throw $ ReadOutputBus r
-               (Store, (_, Output)) -> return ()
+               (Store, (_, Output, _)) -> return ()
                (Store, _) -> throw $ WroteInputBus r)
       act r
     _ -> act r
@@ -180,9 +182,9 @@ trackUsage t r act
 
 -- | Return true if type 'b' can be "contained" by type 'a'
 typeSubsetOf :: (MonadRepr s m) => Typeness -> Typeness -> m ()
-typeSubsetOf t1@(Typed a) t2@(Typed b) =
+typeSubsetOf t1@(Typed a) t2@(Typed b)
   -- TODO: Make a dedicated error for this function.
-  unless (go a b) $ throw $ TypeMismatchError t2 t1
+ = unless (go a b) $ throw $ TypeMismatchError t2 t1
   where
     go (Unsigned Nothing _) (Unsigned _ _)         = True
     go (Signed Nothing _) (Unsigned _ _)           = True
@@ -191,16 +193,25 @@ typeSubsetOf t1@(Typed a) t2@(Typed b) =
     go (Signed (Just l1) _) (Unsigned (Just l2) _) = l1 >= (l2 + 1)
     go (Unsigned (Just l1) _) (Signed (Just l2) _) = l1 >= (l2 + 1)
     go (Signed l1 _) (Signed l2 _)                 = l1 >= l2
+    go Array {innerTy = t1'} Array {innerTy = t2'} = go t1' t2'
     go l1 l2                                       = l1 == l2
-typeSubsetOf t1 t2 = throw $ TypeMismatchError t2 t1
+-- FIXME: This case was added for undef literals but there is probably a better
+-- way of handling them. Maybe add a dedicated type
+typeSubsetOf _ Untyped = return ()
+typeSubsetOf t1 t2 = trace "Subset of" throw $ TypeMismatchError t2 t1
+
+ensureTypeSubsetOf :: (MonadRepr s m) => Typeness -> m ()
+ensureTypeSubsetOf t1 =
+  getTypeCtx >>= \case
+    Just t -> typeSubsetOf t t1
+    Nothing -> return ()
 
 unifyTypes ::
      (MonadRepr s m) => Maybe Type -> Typeness -> Typeness -> m Typeness
 unifyTypes expected t1 t2 = do
+  traceM $ "Checking " ++ show t1 ++ " " ++ show t2
   res <- go t1 t2
-  getTypeCtx >>= \case
-    Just t  -> typeSubsetOf t res
-    Nothing -> return ()
+  ensureTypeSubsetOf res
   case expected of
     Just t  -> unifyTypes Nothing (Typed t) res
       -- unless (Typed t == res) $ throw $ TypeMismatchError (Typed t) res
@@ -215,8 +226,9 @@ unifyTypes expected t1 t2 = do
       return $ Unsigned (Just (max l1 l2)) loc
     go' (Signed (Just l1) loc) (Signed (Just l2) _) =
       return $ Signed (Just (max l1 l2)) loc
-    go' (Unsigned (Just l1) loc) (Signed (Just l2) _) -- FIXME: Does formula below makes sense?
+    go' (Unsigned (Just l1) loc) (Signed (Just l2) _)
      =
+      trace ("Unsigned " ++ show l1 ++ " -> Signed " ++ show l2) $
       return $
       Signed
         (Just
@@ -226,7 +238,7 @@ unifyTypes expected t1 t2 = do
                else 0)))
         loc
     go' (Signed (Just l1) loc) (Unsigned (Just l2) _) =
-      return $
+      trace "Signed -> Unsigned" return $
       Signed
         (Just
            (max l1 l2 +
@@ -377,9 +389,10 @@ checkExpr p@PrimName {..} = do
   ty' <- trackUsage Load name lookupName
   return (ty', p {ty = ty'} :: Expr)
 checkExpr p@FunCall {..}  = (,p) <$> lookupName name
-checkExpr p@PrimLit {..} =
+checkExpr p@PrimLit {..} = do
   let t = typeOf lit
-  in return (t, p {ty = t} :: Expr)
+  ensureTypeSubsetOf t
+  return (t, p {ty = t} :: Expr)
 checkExpr Binary {..} = do
   -- TODO: Check that types are supported for operands
   (t1, e1) <- checkExpr left
@@ -727,19 +740,26 @@ exprReduceToInt e                          = throw $ ExprInvalidInContext e
 
 exprReduceToLiteral :: (MonadRepr s m) => Expr -> m Literal
 exprReduceToLiteral (PrimLit _ l _) = return l
+-- TODO: Generalize this somehow
+exprReduceToLiteral (Unary _ (UnMinus _) (PrimLit _ (LitInt i loc) _) _) =
+  return (LitInt (-i) loc)
 exprReduceToLiteral e               = throw $ ExprInvalidInContext e
 
 busToShape :: (MonadRepr s m ) => Bus -> m BusShape
 busToShape Bus {signals = signals} = BusShape <$> mapM go signals
   where
     go BusSignal {..} = do
-      val <- case value of
-        Just e  -> Just <$> exprReduceToLiteral e
-        Nothing -> pure Nothing
-      range' <- case range of
-        -- TODO: Don't ignore lower range
-        Just (Range _ u _) -> Just <$> exprReduceToLiteral u
-        Nothing            -> pure Nothing
+      val <-
+        case value of
+          Just e  -> Just <$> exprReduceToLiteral e
+          Nothing -> pure Nothing
+      range' <-
+        case range of
+          Just (Range l u _) -> do
+            l' <- exprReduceToLiteral l
+            u' <- exprReduceToLiteral u
+            return $ Just (l', u')
+          Nothing -> pure Nothing
       return (name, (ty, val, range'))
 
 -- | Group a list of tuples by its first input. Turns [(a, b)] into (a, [b]) for
@@ -756,7 +776,7 @@ groupWithM f ((x, y):xs)= do
   rest <- groupWithM f end
   return $ (x, res) : rest
 
--- | Non monadic version of eq-sort
+  -- | Non monadic version of eq-sort
 groupWith :: (Eq a) => (b -> b -> b) -> [(a, b)] -> [(a, b)]
 groupWith f i =
   let f' a b = pure $ f a b
@@ -867,7 +887,8 @@ inferParamTypes insts = do
           _                -> pure Nothing
       locRef <- exprReduceToName e
       bDef <- lookupBus locRef
-      withScope instantiated $ setUsedBus (busRef bDef) (refOf forName, dir)
+      withScope instantiated $
+        setUsedBus (busRef bDef) (refOf forName, dir, False)
       shape <- busToShape (busDef bDef)
       return
         ( ( forName

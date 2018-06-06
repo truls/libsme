@@ -30,6 +30,7 @@ typedef struct SMEInt {
 
 typedef struct Value {
   Type type;
+  int undef;
   union  {
     bool boolean;
     SMEInt* integer;

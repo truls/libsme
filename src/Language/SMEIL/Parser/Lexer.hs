@@ -93,6 +93,7 @@ literal =
   withPos $ choice
     [ symbol "true" >> pure S.LitTrue
     , symbol "false" >> pure S.LitFalse
+    , symbol "'U" >> pure S.LitUndef
     , S.LitString <$> stringLit
     , try $ S.LitFloat <$> float
     , S.LitInt <$> integer

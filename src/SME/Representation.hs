@@ -46,6 +46,10 @@ module SME.Representation
   , InstParam(..)
   , valueToLit
   , truncateAsType
+  , vmax
+  , vmin
+  , vmaximum
+  , vminimum
   ) where
 
 import           Control.Exception               (throw)
@@ -67,8 +71,10 @@ import           Data.Bits.Bitwise               (mask)
 import qualified Data.HashMap.Strict             as M
 import           Data.Loc                        (Located, locOf, noLoc)
 import qualified Data.Set                        as S
+import           Data.Tuple.Extra                (fst3)
 import           Data.Vector                     (Vector)
 import qualified Data.Vector                     as V
+import           Text.PrettyPrint.Mainland       (text)
 import           Text.PrettyPrint.Mainland.Class (Pretty (ppr))
 
 
@@ -93,6 +99,7 @@ newtype ReprM m s a = ReprM
              , MonadError TypeCheckErrors
              , MonadIO
              )
+
 
 -- TODO: Figure out something nicer instead of these functions
 runReprMidentity ::
@@ -170,6 +177,10 @@ class ( Monad m
           Nothing ->
             traceS "lookup recursing2" $ withScope i (go (N.fromList is))
   {-# INLINEABLE lookupDef' #-}
+
+  -- | Is name a top-level definition
+  isTopDef :: (References a) => a -> m Bool
+  isTopDef i = M.member (toString (N.head (refOf i))) <$> gets defs
 
   -- | Looks up a top-level definition
   lookupTopDef :: (References a, Located a, Pretty a) => a -> m (BaseTopDef s)
@@ -295,7 +306,7 @@ class ( Monad m
   addUsedEnt :: (Nameable a) => a -> m ()
   addUsedEnt e = modify (\x -> x {used = S.insert (nameOf e) (used x)})
 
-  setUsedBus :: Ref -> (Ref, BusState) -> m ()
+  setUsedBus :: Ref -> (Ref, BusState, Bool) -> m ()
   setUsedBus r s = do
     cur <- gets curEnv
     traceMS ("setUsedbus " ++ show cur ++ " " ++ show r ++ " " ++ show s)
@@ -305,7 +316,7 @@ class ( Monad m
            p {usedBuses = M.insertWith S.union r (S.singleton s) usedBuses}
          other -> other)
 
-  getBusState :: Ref -> m (Maybe [(Ref, BusState)])
+  getBusState :: Ref -> m (Maybe [(Ref, BusState, Bool)])
   getBusState r =
     M.lookup r . usedBuses <$> getCurEnv >>= \case
       Just s -> pure $ Just $ S.toList s
@@ -411,6 +422,7 @@ data Value
   | BoolVal !Bool
   | DoubleVal !Double
   | SingleVal !Float
+  | UndefVal
   deriving (Show, Eq)
 
 instance Ord Value
@@ -441,6 +453,8 @@ instance Ord Value
   (SingleVal _) `compare` (DoubleVal _) = LT -- TODO
   (ArrayVal _ a) `compare` b = maximum a `compare` b
   a `compare` (ArrayVal _ b) = a `compare` maximum b
+  UndefVal `compare` _ = error "Comparison with undef"
+  _ `compare` UndefVal = error "Comparison with undef"
 
 instance Pretty Value where
   ppr (IntVal i)     = ppr i
@@ -448,6 +462,7 @@ instance Pretty Value where
   ppr (BoolVal b)    = ppr b
   ppr (DoubleVal d)  = ppr d
   ppr (SingleVal s)  = ppr s
+  ppr UndefVal       = text "U"
 
 valueToLit :: Value -> Literal
 valueToLit (IntVal i)      = LitInt i noLoc
@@ -456,6 +471,7 @@ valueToLit (SingleVal i)   = LitFloat (realToFrac i) noLoc
 valueToLit (BoolVal True)  = LitTrue noLoc
 valueToLit (BoolVal False) = LitFalse noLoc
 valueToLit ArrayVal {}     = undefined
+valueToLit UndefVal {}     = LitUndef noLoc
 
 -- | For values that are instance of Num, runs abs on the value. Returns the
 -- identity otherwise
@@ -465,6 +481,23 @@ absValue (DoubleVal v) = DoubleVal $ abs v
 absValue (SingleVal v) = SingleVal $ abs v
 absValue v             = v
 
+-- | Returns the maximum of two values
+vcmp :: (Value -> Value -> Value) -> Value -> Value -> Value
+vcmp _ UndefVal v = v
+vcmp _ v UndefVal = v
+vcmp f v1 v2      = f v1 v2
+
+vmin :: Value -> Value -> Value
+vmin = vcmp min
+
+vmax :: Value -> Value -> Value
+vmax = vcmp max
+
+vmaximum :: (Foldable t) => t Value -> Value
+vmaximum = foldr1 vmax
+
+vminimum :: (Foldable t) => t Value -> Value
+vminimum = foldr1 vmin
 
 -- | Truncates integer values to their bit length with accurate overflow
 -- emulation
@@ -569,27 +602,36 @@ instance Nameable (BaseDefType a) where
   nameOf ParamDef {..}     = paramName
 
 -- | Sets the type of a definition when possible
-setType :: Typeness -> Maybe Value -> BaseDefType a -> Maybe (BaseDefType a)
+setType ::
+     Typeness -> Maybe (Value, Value) -> BaseDefType a -> Maybe (BaseDefType a)
 setType t val d@VarDef {varDef = v@Variable {}} =
-  let range' = mkRange $ valueToLit <$> val
+  let range' = mkRange $ rangeToLit <$> val
   in Just $ d {varDef = v {ty = t, range = range'}}
 setType _ _ _ = Nothing
 
 -- TODO (maybe): If we alter the bus definition AST directly here, we don't have
 -- to pass around the range in the BusShape
 setBusChanType ::
-     Ident -> Maybe Value -> Typeness -> BaseDefType a -> Maybe (BaseDefType a)
+     Ident
+  -> Maybe (Value, Value)
+  -> Typeness
+  -> BaseDefType a
+  -> Maybe (BaseDefType a)
 setBusChanType ident range ty b@BusDef {busShape = shape} =
   let shape' =
         BusShape $
         map
           (\o@(i, (_, l, _)) ->
              if ident == i
-               then (i, (ty, l, valueToLit <$> range))
+               then (i, (ty, l, rangeToLit <$> range))
                else o)
           (unBusShape shape)
   in Just b {busShape = shape'}
 setBusChanType _ _ _ _                                = Nothing
+
+rangeToLit :: (Value, Value) -> (Literal, Literal)
+rangeToLit (u, l) = (valueToLit u, valueToLit l)
+
 
 lookupTy ::
      (MonadRepr s m, References a, Located a, Pretty a) => a -> m Typeness
@@ -630,7 +672,7 @@ lookupTy r = do
 -- TODO: Maybe change this to a map
 newtype BusShape = BusShape
   -- Tuple is, type, default val, range
-  { unBusShape :: [(Ident, (Typeness, Maybe Literal, Maybe Literal))]
+  { unBusShape :: [(Ident, (Typeness, Maybe Literal, Maybe (Literal, Literal)))]
   } deriving (Show, Data)
 
 instance Eq BusShape where
@@ -679,7 +721,7 @@ type ParamList = [(Ident, ParamType)]
 -- | Map from the global reference of a bus definition a set containing the
 -- local name that is used for a bus within a process and the mode of the bus
 -- (input/output/...)
-type UsedBuses = M.HashMap Ref (S.Set (Ref, BusState))
+type UsedBuses = M.HashMap Ref (S.Set (Ref, BusState, Bool))
 
 data BaseTopDef a
   = ProcessTable { symTable  :: BaseSymTab a

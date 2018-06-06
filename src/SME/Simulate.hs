@@ -49,10 +49,11 @@ import           Data.Graph.Inductive.Graph        (LNode, lab, mkGraph)
 import           Data.Graph.Inductive.PatriciaTree (Gr)
 import           Data.Graph.Inductive.Query.DFS    (scc, topsort)
 import qualified Data.HashMap.Strict               as M
-import           Data.Loc                          (noLoc)
+import           Data.Loc                          (locOf, noLoc)
 import qualified Data.Map.Strict                   as MM
 import qualified Data.Text                         as T
 import qualified Data.Text.IO                      as T
+import           Data.Tuple.Extra                  (fst3)
 import           Data.Vector                       (fromList, (!), (//))
 
 import           Language.SMEIL.Pretty
@@ -189,10 +190,12 @@ instance Extension SimExt where
 data BusChan
   = LocalChan { name       :: Ident
               , maxBusVal  :: IORef Value
+              , minBusVal  :: IORef Value
               , localRead  :: IORef Value
               , localWrite :: IORef Value }
   | ExternalChan { name      :: Ident
                  , maxBusVal :: IORef Value
+                 , minBusVal :: IORef Value
                  , extWrite  :: ValuePtr
                  , extRead   :: ValuePtr }
   deriving (Eq)
@@ -235,17 +238,18 @@ type VTable =  M.HashMap Ident SimRef
 
 data SimRef
   = MutVal { _cur   :: !Value
-           , maxVal :: !Value }
+           , minVal :: !Value
+           , maxVal :: !Value}
   | ConstVal Value
   | InstVal ProcInst
   | BusVal BusInst
   deriving (Eq)
 
 instance Show SimRef where
-  show (BusVal _)   = "BusVal"
-  show (ConstVal v) = show v
-  show (MutVal v _) = show v
-  show (InstVal v)  = show v
+  show (BusVal _)     = "BusVal"
+  show (ConstVal v)   = show v
+  show (MutVal v _ _) = show v
+  show (InstVal v)    = show v
 
 -- | Runs a ProcInst and saves its modified vtable
 runProcess :: ProcInst -> SimM ProcInst
@@ -429,6 +433,9 @@ evalBinOp NeqOp {} (IntVal i) (IntVal j)         = pure $ BoolVal $ i /= j
 evalBinOp NeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i /= j
 evalBinOp NeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i /= j
 evalBinOp NeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i /= j
+evalBinOp _        UndefVal    _                 = pure UndefVal
+evalBinOp _        _           UndefVal          = pure UndefVal
+
 evalBinOp o v1 v2 =
   bad
     ("Unsupported types for binary operator " ++
@@ -443,6 +450,7 @@ evalUnOp UnMinus {} (SingleVal i) = pure $ SingleVal $ negate i
 evalUnOp UnMinus {} (DoubleVal i) = pure $ DoubleVal $ negate i
 evalUnOp NotOp {} (BoolVal i)     = pure $ BoolVal $ not i
 evalUnOp NegOp {} (IntVal i)      = pure $ IntVal $ complement i
+evalUnOp _        UndefVal        = pure UndefVal
 evalUnOp _ _                      = bad "Unsupported types for unary operator"
 
 
@@ -459,8 +467,7 @@ propagateBus BusInst {..}
            liftIO $
             --traceM ("Bus looks like " ++ show name)
             do
-             rw <- readIORef writeRef
-             writeIORef readRef rw
+             writeIORef readRef =<< readIORef writeRef
              return Nothing
          ExternalChan {extRead = readEnd}
           -- External channels are propagated by the c-wrapper
@@ -518,6 +525,7 @@ instance ToValue Literal where
   toValue LitString {} = undefined
   toValue LitTrue {} = BoolVal True
   toValue LitFalse {} = BoolVal False
+  toValue LitUndef {} = UndefVal
 
 instance ToValue Int where
   toValue v = IntVal $ fromIntegral v
@@ -563,7 +571,8 @@ valueToType (IntVal v) _
 valueToType (BoolVal _) t                      = t
 valueToType (SingleVal _) t                    = t
 valueToType (DoubleVal _) t                    = t
-valueToType (ArrayVal _ v) t = valueToType (maximum v) t
+valueToType (ArrayVal _ v) t = valueToType (vmaximum v) t
+valueToType UndefVal _ = Untyped
 
 -- | Creates a bus instance either locally or in the C-interface depending on if
 -- the bus is stored locally or not.
@@ -585,42 +594,50 @@ mkBusInst exposed n bs busRef = do
         (unBusShape bs')
         (\case
            (i, (oTy@(Typed ty), lit, _)) -> do
-             defVal <- genDefaultValue lit oTy
+             let defVal = genDefaultValue lit
              (i, ) <$>
                if isPuppet
                  then liftIO $ do
                         chan <- mkExtChan bptr (toString i) ty
                         -- Set initial value of external channel
                         poke (writePtr chan) defVal
-                        ExternalChan i <$> newIORef defVal <*>
+                        ExternalChan i <$> newIORef defVal <*> newIORef defVal <*>
                           pure (writePtr chan) <*>
                           pure (readPtr chan)
                  else liftIO $
                       LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
+                      newIORef defVal <*>
                       newIORef defVal
            _ -> bad "Illegal bus chan")
     toBusChans :: BusShape -> SimM [(Ident, BusChan)]
     toBusChans bs' =
       mapM
         (\(i, (ty, lit, _)) -> do
-           defVal <- genDefaultValue lit ty
+           let defVal = genDefaultValue lit
            (i, ) <$>
              liftIO
                (LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
+                newIORef defVal <*>
                 newIORef defVal))
         (unBusShape bs')
 
 
-genDefaultValue :: Maybe Literal -> Typeness -> SimM Value
-genDefaultValue Nothing ty = mkInitialValue ty
-genDefaultValue (Just l) _ = return $ toValue l
+-- genDefaultValue :: Maybe Literal -> Typeness -> SimM Value
+-- genDefaultValue Nothing ty = mkInitialValue ty
+-- genDefaultValue (Just l) _ = return $ toValue l
+
+genDefaultValue :: Maybe Literal -> Value
+genDefaultValue Nothing  = UndefVal
+genDefaultValue (Just l) = toValue l
 
 mkInitialValue :: Typeness -> SimM Value
 mkInitialValue Untyped = bad "Untyped value in sim"
 mkInitialValue (Typed t) = go t
   where
-    go Signed {} = return $ toValue (0 :: Int)
-    go Unsigned {} = return $ toValue (0 :: Int)
+    -- go Signed {} = return $ toValue (0 :: Int)
+    -- go Unsigned {} = return $ toValue (0 :: Int)
+    go Signed {} = return UndefVal
+    go Unsigned {} = return UndefVal
     go Single {} = return $ toValue (0 :: Float)
     go Double {} = return $ toValue (0 :: Double)
     go Bool {} = return $ toValue False
@@ -643,16 +660,16 @@ mkVtable :: [DefType] -> VTable -> SimM VTable
 mkVtable ds vtab = foldM go vtab ds
   where
     go m VarDef {..} = do
-      (defaultValue, maxValue) <-
+      (defaultValue, minVal, maxVal) <-
         case varVal of
           Just v ->
             case toValue v of
-              a@(ArrayVal _ av) -> pure (a, maximum av)
-              v'                -> pure (v', v')
+              a@(ArrayVal _ av) -> pure (a, vminimum av, vmaximum av)
+              v'                -> pure (v', v', v')
           Nothing -> do
-            v <- mkInitialValue (typeOf varDef)
-            pure (v, v)
-      return $ M.insert varName (MutVal defaultValue (absValue maxValue)) m
+            iv <- mkInitialValue $ typeOf varDef
+            return (iv, iv, iv)
+      return $ M.insert varName (MutVal defaultValue minVal maxVal) m
     go m ConstDef {..} =
       return $ M.insert constName (ConstVal $ toValue constVal) m
     go m EnumFieldDef {..} =
@@ -757,7 +774,7 @@ addCurVtable i r = do
 -- initially assigned to value 'r'
 withLocalVar :: Ident -> Value -> SimM a -> SimM a
 withLocalVar i r act = do
-  addCurVtable i (MutVal r r)
+  addCurVtable i (MutVal r r r)
   res <- act
   putCurVtable . M.delete i =<< getCurVtable
   return res
@@ -810,29 +827,36 @@ getInVtab i =
 
 -- | Sets a value in current VTab
 setValueVtab :: Name -> Value -> SimM ()
-setValueVtab Name {parts = parts} v' = go parts
+setValueVtab name@Name {parts = parts} v' = go parts
   where
     go (p :| []) =
       case p of
         IdentName {ident = i} ->
           getInVtab i >>= \case
-            MutVal _ maxV -> setInVtab i $ MutVal v' (max maxV (absValue v'))
+            MutVal _ minV maxV ->
+              setInVtab i $ MutVal v' (vmin minV v') (vmax maxV v')
             BusVal _ -> bad "bus as value"
             _ -> bad "immutable value"
         ArrayAccess {..} -> do
           i <- ensureNamePartIdent namePart
-          idx <- ensureIndex index
-          getInVtab i >>= \case
-            MutVal (ArrayVal l v) m ->
-              if idx > (fromIntegral l - 1)
-                -- TODO: Dedicated error type
-                then bad "Index out of bounds"
-                else setInVtab i $
-                     MutVal
-                       (ArrayVal l (v // [(idx, v')]))
-                       (max v' (absValue m))
-            ConstVal ArrayVal {} -> bad "immutable array"
-            _ -> bad "Non-array value"
+          ensureIndex index >>= \case
+            Nothing -> bad "Undefined index"
+            Just idx ->
+              getInVtab i >>= \case
+                MutVal (ArrayVal l v) minV maxV ->
+                  if idx > (fromIntegral l - 1)
+                   -- TODO: Dedicated error type
+                    then bad "Index out of bounds"
+                    else setInVtab i $
+                         MutVal
+                           (ArrayVal l (v // [(idx, v')]))
+                           (vmin v' minV)
+                           (vmax v' maxV)
+                ConstVal ArrayVal {} -> bad "immutable array"
+                cur ->
+                  bad
+                    ("Non-array value " ++
+                     pprrString name ++ " " ++ show (locOf name) ++ " " ++ show cur)
     go (i :| [i2]) = do
       i' <- ensureNamePartIdent i
       i2' <- ensureNamePartIdent i2
@@ -843,9 +867,10 @@ setValueVtab Name {parts = parts} v' = go parts
 
 -- FIXME: We should probably introduce an intermediate language to avoid
 -- handling this here
-ensureIndex :: ArrayIndex -> SimM Int
+ensureIndex :: ArrayIndex -> SimM (Maybe Int)
 ensureIndex (Index e) = evalExpr e >>= \case
-  IntVal v -> return (fromIntegral v)
+  IntVal v -> return $ Just (fromIntegral v)
+  UndefVal -> return Nothing
   _ -> -- TODO: Check this in the typechecker
     bad "Non-integer array index"
 ensureIndex Wildcard = bad "Wildcard index"
@@ -855,22 +880,27 @@ ensureNamePartIdent IdentName {..} = return ident
 ensureNamePartIdent ArrayAccess {} = bad "ArrayAccess array NamePart"
 
 getValueVtab :: Name -> SimM Value
-getValueVtab Name {parts = parts} = go parts
+getValueVtab name@Name {parts = parts} = go parts
   where
     go (p :| []) =
       case p of
         IdentName {ident = i} ->
           getInVtab i >>= \case
-            MutVal v _ -> pure v
+            MutVal v _ _ -> pure v
             ConstVal v -> pure v
             _ -> bad "not readable"
         ArrayAccess {..} -> do
           i <- ensureNamePartIdent namePart
-          idx <- ensureIndex index
-          getInVtab i >>= \case
-            MutVal (ArrayVal l v) _ -> readArray idx l v
-            ConstVal (ArrayVal l v) -> readArray idx l v
-            _ -> bad "Non-array value"
+          ensureIndex index >>= \case
+            Nothing -> pure UndefVal
+            Just idx ->
+              getInVtab i >>= \case
+                MutVal (ArrayVal l v) _ _ -> readArray idx l v
+                ConstVal (ArrayVal l v) -> readArray idx l v
+                _ ->
+                  bad
+                    ("Non-array value " ++
+                     pprrString name ++ " " ++ show (locOf name))
       where
         readArray idx l v =
           if idx > (fromIntegral l - 1)
@@ -895,14 +925,22 @@ getValueVtab Name {parts = parts} = go parts
 setBusVal :: Ident -> BusInst -> Value -> SimM ()
 setBusVal i BusInst {..} v =
   case MM.lookup i chans of
-    Just LocalChan {localWrite = write, maxBusVal = maxBusVal} ->
+    Just LocalChan { localWrite = write
+                   , minBusVal = minBusVal
+                   , maxBusVal = maxBusVal
+                   } ->
       liftIO $ do
-        modifyIORef' maxBusVal (`max` absValue v)
+        modifyIORef' maxBusVal (`vmax` v)
+        modifyIORef' minBusVal (`vmin` v)
         writeIORef write v
-    Just ExternalChan {extWrite = write, maxBusVal = maxBusVal} -> do
+    Just ExternalChan { extWrite = write
+                      , minBusVal = minBusVal
+                      , maxBusVal = maxBusVal
+                      } -> do
       traceM ("Writing external channel " ++ show v)
       liftIO $ do
-        modifyIORef' maxBusVal (`max` absValue v)
+        modifyIORef' maxBusVal (`vmax` v)
+        modifyIORef' minBusVal (`vmin` v)
         poke write v
     Nothing -> bad "undefined bus channel"
 
@@ -911,19 +949,20 @@ getBusVal i BusInst {..} = do
   traceM $ "Reading bus val " ++ show i
   case MM.lookup i chans of
     Just LocalChan {localRead = readEnd} -> liftIO $ readIORef readEnd
-    Just ExternalChan {extRead = readEnd, maxBusVal = maxBV} -> do
+    Just ExternalChan {extRead = readEnd, minBusVal = minBV, maxBusVal = maxBV} -> do
       res <- liftIO $ peek readEnd
       -- TODO: Handle this on propagation rather than doing it on every read
-      liftIO $ modifyIORef' maxBV (`max` res)
+      liftIO $ modifyIORef' maxBV (`vmax` res)
+      liftIO $ modifyIORef' minBV (`vmin` res)
       trace ("Reading external channel " ++ show res ++ " " ++ show i) $
         return res
     Nothing -> bad "undefined bus channel"
 
 -- | Converts a simulator value reference to a value.
 getValue :: SimRef -> SimM Value
-getValue (MutVal v _ ) = return v
-getValue (ConstVal v)  = return v
-getValue _             = bad "SimRef does not have a simple value"
+getValue (MutVal v _ _) = return v
+getValue (ConstVal v)   = return v
+getValue _              = bad "SimRef does not have a simple value"
 
 evalConstExpr :: Expr -> SimM Value
 evalConstExpr PrimLit {..} = return $ toValue lit
@@ -1003,7 +1042,9 @@ instEntity st NetworkTable {netName = name, symTable = symTable} = do
   vtab <- mkVtable symtab st
   --traceM $ "Made symtab: " ++ show vtab
   withVtable_ vtab $ withScope name $ processInstDefs symtab
-instEntity st ProcessTable {stms = stms, procName = name, symTable = symTable} = do
+instEntity st ProcessTable { stms = stms
+                           , procName = name
+                           , symTable = symTable} = do
   let symtab = M.elems symTable
   vtab <- mkVtable symtab st
   instTree <- withVtable_ vtab $ withScope name $ processInstDefs symtab
@@ -1264,33 +1305,39 @@ applyTypes = do
   return ()
 
 
-chanValList :: [BusInst] -> IO [((Ref, Ident), Value)]
+chanValList :: [BusInst] -> IO [((Ref, Ident), Value, Value)]
 chanValList b =
-  maxInGroup . sortBy (\(x, _) (y, _) -> compare x y) <$> concatMapM go b
+  minMaxInGroup . sortBy (\x y -> compare (fst3 x) (fst3 y)) <$> concatMapM go b
   where
     go BusInst {..} =
       let vals = MM.elems chans
-      in map (\(n, v) -> ((ref, n), v)) <$> mapM chanMaxVal vals
+      in map (\(n, minV, maxV) -> ((ref, n), minV, maxV)) <$>
+         mapM chanMinMaxVal vals
 
 
 -- TODO: Replace by groupBy/maximumBY
-maxInGroup :: (Eq a, Ord b) => [(a, b)] -> [(a, b)]
-maxInGroup []         = []
-maxInGroup [i]        = [i]
-maxInGroup (i1:i2:is) = go i1 (i2 : is)
+minMaxInGroup :: (Eq a) => [(a, Value, Value)] -> [(a, Value, Value)]
+minMaxInGroup []         = []
+minMaxInGroup [i]        = [i]
+minMaxInGroup (i1:i2:is) = go i1 (i2 : is)
   where
-    go c@(n1, v1) (e@(n2, v2):es)
-      | n1 /= n2  = c : go e es
-      | v2 > v1   = go e es
+    go c@(n1, va1, va2) (e@(n2, vb1, vb2):es)
+      | n1 /= n2 = c : go e es
+      -- FIXME: This is not safe now that Ord instance is partial
+      | vb1 < va1 || vb2 > va2 = go (n2, vmin vb1 va1, vmax vb2 va2) es
       | otherwise = go c es
     go c [] = [c]
 
 
 -- | Return the maximum value logged for a bus
-chanMaxVal :: BusChan -> IO (Ident, Value)
-chanMaxVal LocalChan {..}    = (name, ) <$> readIORef maxBusVal
-chanMaxVal ExternalChan {..} = (name, ) <$> readIORef maxBusVal
+chanMinMaxVal :: BusChan -> IO (Ident, Value, Value)
+chanMinMaxVal LocalChan {..} =
+  (name, , ) <$> readIORef minBusVal <*> readIORef maxBusVal
+chanMinMaxVal ExternalChan {..} =
+  (name, , ) <$> readIORef minBusVal <*> readIORef maxBusVal
 
+maxValueAbs :: Value -> Value -> Value
+maxValueAbs v1 v2 = vmax (absValue v1) (absValue v2)
 
 updateBusTypes :: [BusInst] -> SimM ()
 updateBusTypes bs = do
@@ -1299,34 +1346,34 @@ updateBusTypes bs = do
   maxtypes <-
     forM
       maxvals
-      (\((r, i), v) -> do
+      (\((r, i), minV, maxV) -> do
          t <- withScope (N.head r) $ lookupTy (r <> refOf i)
-         rn' <- getRangeLit v
+         rlit <- getRangeLit minV maxV
          let (t', rn'') =
                if noStrict || isUnsized t
-                 then (valueToType v t, rn')
-                 else (t, Nothing)
+                 then (valueToType (maxValueAbs minV maxV) t, rlit)
+                 else (t, rlit)
          return ((r, i), (t', rn'')))
   forM_
     maxtypes
     (\((r, i), (t, rn)) ->
        withScope (N.head r) $ updateDef r (setBusChanType i rn t))
 
-getRangeLit :: Value -> SimM (Maybe Value)
-getRangeLit v =
+getRangeLit :: Value -> Value -> SimM (Maybe (Value, Value))
+getRangeLit v1 v2 =
   getConfig noRangeAnnot >>= \case
-    False -> pure (Just v)
+    False -> pure $ Just (v1, v2)
     True -> pure Nothing
 
 
-varValList :: [ProcInst] -> [(Ref, Value)]
+varValList :: [ProcInst] -> [(Ref, Value, Value)]
 varValList ps =
-  maxInGroup . sortBy (\(x, _) (y, _) -> compare x y) $ concatMap go ps
+  minMaxInGroup . sortBy (\x y -> compare (fst3 x) (fst3 y)) $ concatMap go ps
   where
     go ProcInst {..} =
       mapMaybe (uncurry (simRefMaxVal fromEnt)) (M.toList valueTab)
-    simRefMaxVal r i MutVal {maxVal = maxVal} =
-      Just (refOf r <> refOf i, maxVal)
+    simRefMaxVal r i MutVal {minVal = minVal, maxVal = maxVal} =
+      Just (refOf r <> refOf i, minVal, maxVal)
     simRefMaxVal _ _ _ = Nothing
 
 
@@ -1337,12 +1384,12 @@ updateVarTypes ps = do
   maxtypes <-
     forM
       maxvals
-      (\(r, v) -> do
+      (\(r, minV, maxV) -> do
          t <- withScope (N.head r) $ lookupTy r
-         r' <- getRangeLit v
+         r' <- getRangeLit minV maxV
          let t' =
                if noStrict || isUnsized t
-                 then (valueToType v t, r')
+                 then (valueToType (maxValueAbs minV maxV) t, r')
                  else (t, r')
          return (r, t'))
   forM_ maxtypes $ \(r, (t, r')) ->

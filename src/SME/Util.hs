@@ -1,6 +1,5 @@
 module SME.Util
   ( displayLoc'
-  , fst3
   , mkRange
   , identToName
   ) where
@@ -13,18 +12,13 @@ import           Language.SMEIL.Syntax
 displayLoc' :: (Located a) => a -> String
 displayLoc' = displayLoc . locOf
 
-fst3 :: (a, b, c) -> a
-fst3 (a, _, _) = a
-
--- TODO: This will go awfully wrong if the given literal is somehow not an
--- int. Make sure this cant happen
-mkRange :: Maybe Literal -> Maybe Range
+mkRange :: Maybe (Literal, Literal) -> Maybe Range
 mkRange =
   fmap
-    (\x ->
+    (\(l, u) ->
        Range
-         (PrimLit (typeOf (0 :: Integer)) (LitInt 0 noLoc) noLoc)
-         (PrimLit (typeOf x) x noLoc)
+         (PrimLit (typeOf l) l noLoc)
+         (PrimLit (typeOf u) u noLoc)
          noLoc)
 
 -- FIXME: Consider a type class for this

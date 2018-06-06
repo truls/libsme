@@ -43,8 +43,8 @@ import           SME.CodeGen.TH
 import           SME.Error
 import           SME.Representation
 
---import           Debug.Trace                 (trace, traceM)
---import           Text.Show.Pretty            (ppShow)
+-- import           Debug.Trace                 (trace, traceM)
+-- import           Text.Show.Pretty            (ppShow)
 
 -- | Read the CSV parsing library
 csvUtil :: V.DesignFile
@@ -122,6 +122,8 @@ genLit LitArray {..}  =
               pure [expr|($elassocs:elAssocs)|]
 genLit LitTrue {..} = pure [expr|true|]
 genLit LitFalse {..} = pure [expr|false|]
+-- FIXME: Take into account type here (i.e. generate vector of undefs for undefs)
+genLit LitUndef {..} = pure [expr|'U'|]
 
 -- | Generate cooresponding VHDL code for an expression
 genExpr :: Expr -> GenM V.Expression
@@ -281,9 +283,12 @@ genIdents ns = intercalate "_" (map toString ns)
 
 getUsedBuses :: TopDef -> [(Ref, (Ref, BusState))]
 getUsedBuses ProcessTable {..} =
-  concatMap (\(x, y) -> map (\a -> (x, a)) (S.toList y)) (M.toList usedBuses)
+  concatMap (\(x, y) -> map (\a -> (x, a)) (filterUB y)) (M.toList usedBuses)
+  where
+    filterUB = map (\(x, y, _) -> (x, y)) . S.toList
+
 getUsedBuses NetworkTable {} =
-  error "Instantiation of networks not yet supported"
+  error "Instantiation of networks not yet supported for code generation"
 
 -- Generate ports for a process using the naming_scheme:
 -- If bus is declared within process, then name signal as bus-name_signal-name
@@ -627,10 +632,11 @@ genInstDecls dts =
          constAssocs <- genGenericMap (refOf instantiated) instDef
          -- Get port association maps
          -- Generate the buses that we can from the parameter lists
-         fromParams <- genPortParamMap instantiated params
+         -- FIXME: (nub params) is likely a bug in type-checker param inference
+         fromParams <- genPortParamMap instantiated (nub params)
          let fromParamRefs = map fst fromParams
-             remainingBuses =
-               filter (\x -> fst x `elem` fromParamRefs) (getUsedBuses inst)
+             remainingBuses = --(getUsedBuses inst)
+               filter (\x -> fst x `notElem` fromParamRefs) (getUsedBuses inst)
              fromParams' = concatMap snd fromParams
          portAssocs <-
            concatForM
@@ -680,8 +686,10 @@ genInstDecls dts =
           (\(_, parType) p ->
              case (parType, p) of
                (BusPar {..}, InstBusPar par) -> do
-                 busName <- refOf . nameOf <$> lookupDef ref
-                 return $ Just (ref, genPortMap busName par parBusShape)
+                 --busName <- refOf . nameOf <$> lookupDef ref
+                 return $ Just (ref, genPortMap par localRef parBusShape)
+                 --return $ Just (ref, genPortMap (par <> (Ident "genPortparammap" noLoc N.:| [])) localRef parBusShape)
+
                _ -> return Nothing)
           forParList
           pars
@@ -706,11 +714,15 @@ genGenericMap topDef Instance {params = instPars} = do
 -- interconnect. For exposed buses, create an appropriate in/out port in the
 -- entity and connect to that.
 
+declHere :: Ident -> Ref -> Bool
+declHere cur r = N.head r == cur
+
 -- | Gathers all buses used by instantiated processes. If they are exposed, we
 -- generate the corresponding signals and otherwise we genearte the appropriate
 -- input/output ports.
-getUsedBusesOfInsts :: [DefType] -> GenM [(Maybe BusState, Ref, BusShape)]
-getUsedBusesOfInsts dts = do
+getUsedBusesOfInsts ::
+     Ident -> [DefType] -> GenM [(Maybe BusState, Ref, BusShape)]
+getUsedBusesOfInsts current dts = do
   buses <-
     concatForM
       dts
@@ -722,13 +734,17 @@ getUsedBusesOfInsts dts = do
            inst <- lookupTopDef instantiated
            return $ map (, instName, anonymous) (getUsedBuses inst)
          _ -> pure [])
-  concatForM
+  nub <$> concatForM
     buses
     -- FIXME: Woha!
     (\((def, (_, state)), instName, anonymous) ->
        lookupDef def >>= \case
          bd@BusDef {isExposed = ex, busShape = bs} ->
-           let n = genChName anonymous instName (nameOf bd)
+           let n =
+                 genChName
+                   (anonymous || declHere current def)
+                   instName
+                   (nameOf bd)
            in case (ex, state) of
                 (True, _)       -> pure [(Just state, n, bs)]
                 -- For non-exposed buses, we only add connective signals for
@@ -743,8 +759,8 @@ genChName :: Bool -> Ident -> Ident -> Ref
 genChName True _iName bName = refOf bName
 genChName False iName bName = refOf iName <> refOf bName
 
-genInstSignals :: [DefType] -> GenM V.ArchitectureDeclarativePart
-genInstSignals dt = genInstSignals' =<< getUsedBusesOfInsts dt
+genInstSignals :: Ident -> [DefType] -> GenM V.ArchitectureDeclarativePart
+genInstSignals cur dt = genInstSignals' =<< getUsedBusesOfInsts cur dt
   where
     genInstSignals' ::
          [(Maybe BusState, Ref, BusShape)] -> GenM V.ArchitectureDeclarativePart
@@ -765,9 +781,11 @@ genInstSignals dt = genInstSignals' =<< getUsedBusesOfInsts dt
 -- TODO: Now that we have ranges in busShapes, we can also render ranges in the
 -- generated VHDL
 
+
+
 -- | Generates external entity signals from exposed buses
-genExtPorts :: [DefType] -> GenM [V.InterfaceDeclaration]
-genExtPorts dt = genExtPorts' =<< getUsedBusesOfInsts dt
+genExtPorts :: Ident -> [DefType] -> GenM [V.InterfaceDeclaration]
+genExtPorts cur dt = genExtPorts' =<< getUsedBusesOfInsts cur dt
   where
     genExtPorts' ::
          [(Maybe BusState, Ref, BusShape)] -> GenM [V.InterfaceDeclaration]
@@ -794,8 +812,9 @@ genExtPorts dt = genExtPorts' =<< getUsedBusesOfInsts dt
 
 -- | Generates the names and types of input and output buses for use with the
 -- test bench generation
-genTBWires :: [DefType] -> GenM ([(String, Typeness)], [(String, Typeness)])
-genTBWires dt = genTBWires' <$> getUsedBusesOfInsts dt
+genTBWires ::
+     Ident -> [DefType] -> GenM ([(String, Typeness)], [(String, Typeness)])
+genTBWires cur dt = genTBWires' <$> getUsedBusesOfInsts cur dt
 
 genTBWires' ::
      [(Maybe BusState, Ref, BusShape)]
@@ -882,9 +901,9 @@ genTopDef nt@NetworkTable {..}
   let n = toString (nameOf nt)
   let decls = M.elems symTable
   (instDecls, deps) <- unzip <$> genInstDecls decls
-  intSigs <- genInstSignals decls
+  intSigs <- genInstSignals (nameOf nt) decls
   consts <- genConstDeclsBlock (M.elems symTable)
-  extPorts <- genExtPorts decls
+  extPorts <- genExtPorts (nameOf nt) decls
   let contents =
         [designfile|$contextitems:ctx
                             library work;
@@ -904,7 +923,7 @@ genTopDef nt@NetworkTable {..}
   tb <-
     if topLevel
       then do
-        wires <- genTBWires decls
+        wires <- genTBWires (nameOf nt) decls
         return $ genTB n wires
       else pure []
   return $
@@ -1005,6 +1024,7 @@ genMakefile tfs
 data TaggedFile
   = Regular OutputFile
   | TestBench OutputFile
+
 
 genVHDL :: GenM OutputPlan
 genVHDL = do

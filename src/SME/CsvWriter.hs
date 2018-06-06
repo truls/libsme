@@ -1,8 +1,8 @@
 -- | Asynchronous CSV writer module
-
-{-# LANGUAGE GADTs      #-}
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs             #-}
+{-# LANGUAGE LambdaCase        #-}
 
 module SME.CsvWriter
   ( writeCsvLine
@@ -17,15 +17,18 @@ import           Control.Concurrent.STM  (TMVar, TQueue, atomically,
                                           putTMVar, readTQueue, takeTMVar,
                                           writeTQueue)
 import           Data.ByteString.Builder (Builder, charUtf8, doubleDec,
-                                          floatDec, hPutBuilder, integerDec, stringUtf8)
-import Data.Text.Encoding (encodeUtf8Builder)
-import Data.Text (Text)
+                                          floatDec, hPutBuilder, integerDec,
+                                          stringUtf8)
 import           Data.List               (intersperse)
+import           Data.Text               (Text)
+import           Data.Text.Encoding      (encodeUtf8Builder)
 import           System.IO               (IOMode (WriteMode), hClose, openFile)
 
 import           SME.Representation
 
-data CsvChan = CsvChan (TMVar ()) (TQueue CsvCommand)
+data CsvChan =
+  CsvChan (TMVar ())
+          (TQueue CsvCommand)
 
 data CsvCommand where
   Write :: (ToCsvCell a) => [a] -> CsvCommand
@@ -40,6 +43,7 @@ instance ToCsvCell Value where
   toCsvCell (BoolVal v)    = toCsvCell v
   toCsvCell (DoubleVal v)  = toCsvCell v
   toCsvCell (SingleVal v)  = toCsvCell v
+  toCsvCell UndefVal       = toCsvCell "U"
 
 instance ToCsvCell Integer where
   toCsvCell = integerDec
@@ -64,16 +68,11 @@ instance ToCsvCell Text where
 -- writeCsvLine chan its =            let b' =
 --                  ((b <> (mconcat . intersperse (charUtf8 ',') . map toCsvCell) cs) <>
 --                   charUtf8 '\n')
-
-
 -- finalizeCsv :: CsvChan -> IO ()
 -- finalizeCsv c = atomically $ writeTQueue c Shutdown
-
 -- mkCsvWriter :: FilePath -> IO CsvChan
 -- mkCsvWriter fileName = do
 --   f <- openFile fileName WriteMode
-
-
 finalizeCsv :: CsvChan -> IO ()
 finalizeCsv (CsvChan s c) = do
   atomically $ writeTQueue c Shutdown
@@ -81,8 +80,8 @@ finalizeCsv (CsvChan s c) = do
 
 writeCsvLine :: (ToCsvCell a) => CsvChan -> [a] -> IO ()
 writeCsvLine (CsvChan _ c) its = atomically $ writeTQueue c (Write its)
-{-# INLINE writeCsvLine #-}
 
+{-# INLINE writeCsvLine #-}
 mkCsvWriter :: FilePath -> IO CsvChan
 mkCsvWriter fileName = do
   f <- openFile fileName WriteMode

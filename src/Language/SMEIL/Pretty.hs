@@ -254,6 +254,7 @@ instance Pretty Literal where
   ppr (LitArray es _) = brackets (commasep (map ppr es))
   ppr (LitTrue _)     = text "true"
   ppr (LitFalse _)    = text "false"
+  ppr (LitUndef _)    = text "'U"
 
 instance Pretty Ident where
   ppr (Ident s _) = ppr s

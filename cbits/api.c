@@ -129,6 +129,8 @@ sme_add_chan(Bus* bus, char* name, Type type)
   default:
     chan->read.type = type;
     chan->write.type = type;
+    chan->read.undef = 1;
+    chan->write.undef = 1;
   }
 
   HASH_ADD_KEYPTR(hh, bus->channel, name, strlen(name), chan);

@@ -592,6 +592,7 @@ data Literal
   --            , loc      :: SrcLoc }
   | LitTrue { loc :: SrcLoc }
   | LitFalse { loc :: SrcLoc }
+  | LitUndef { loc :: SrcLoc }
   deriving (Eq, Ord, Show, Data, Typeable)
 
 instance Located Literal where
@@ -601,6 +602,7 @@ instance Located Literal where
   locOf LitArray {..}  = locOf loc
   locOf LitTrue {..}   = locOf loc
   locOf LitFalse {..}  = locOf loc
+  locOf LitUndef {..}  = locOf loc
 
 -- | Returns the minimum number of bits required to represent a number
 bitSize :: forall a. (Integral a) => a -> a
@@ -637,6 +639,7 @@ instance Typed Literal where
         | otherwise = Unsigned (Just (bitSize $ maximum arrayVal)) loc
   typeOf LitTrue {..} = Typed $ Bool loc
   typeOf LitFalse {..} = Typed $ Bool loc
+  typeOf LitUndef {..} = Untyped
 
 data Ident = Ident
   { val :: T.Text
