@@ -1,9 +1,11 @@
 proc timer ()
+    const start : uint = 3020;
+
     bus elapsed {
-        secs: u17;
+        secs: u17 = start;
     };
     const secs_per_day: uint = 86400;
-    var cur: u17;
+    var cur: u17 = start;
 {
     cur = (cur + 1) % secs_per_day;
     elapsed.secs = cur;
@@ -69,6 +71,7 @@ proc decode (in inval)
     };
 {
     switch inval.d1 {
+        case 'U { vals.d1 = 'U; }
         case 0 {vals.d1 = 0; }
         case 0x7E { vals.d1 = 0;}
         case 0x30 { vals.d1 = 1;}
@@ -80,10 +83,11 @@ proc decode (in inval)
         case 0x70 { vals.d1 = 7;}
         case 0x7F { vals.d1 = 8;}
         case 0x7B { vals.d1 = 9;}
-        default { trace("Value was{}", inval.d1);
+        default { trace("Value was {}", inval.d1);
             assert(false); }
     }
     switch inval.d2 {
+        case 'U { vals.d1 = 'U; }
         case 0 {vals.d2 = 0;}
         case 0x7E { vals.d2 = 0;}
         case 0x30 { vals.d2 = 1;}
