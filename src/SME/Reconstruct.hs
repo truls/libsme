@@ -21,8 +21,7 @@ reBusDef :: Bool -> Bus -> Ident -> BusShape -> Bus
 reBusDef isExposed busDef busName busShape =
   Bus isExposed (unique busDef) busName (map mkChan (unBusShape busShape)) noLoc
   where
-    mkChan (n, (ty, lit, range)) =
-      BusSignal n ty ((\x -> PrimLit ty x noLoc) <$> lit) (mkRange range) noLoc
+    mkChan (n, (ty, lit, range)) = BusSignal n ty lit (mkRange range) noLoc
 
 
 reDefTypeNet :: [DefType] -> [NetworkDecl]

@@ -142,15 +142,13 @@ trackUsage ::
 trackUsage t r act
   --traceM $ ("In track usage: " ++ show (nameOf def))
   -- TODO: Track function usage also
- =
+ = do
   lookupDef r >>= \case
     ConstDef {} -> do
       unless (t == Load) $ throw $ WroteConstant r
       updateDef r (\x -> Just x {constState = Used})
-      act r
-    VarDef {} -> do
+    VarDef {} ->
       updateDef r (\x -> Just x {varState = Used})
-      act r
     BusDef {busRef = bRef} -> do
       bus <- lookupDef bRef
       getBusState bRef >>= \case
@@ -176,8 +174,8 @@ trackUsage t r act
                (Load, _) -> throw $ ReadOutputBus r
                (Store, (_, Output, _)) -> return ()
                (Store, _) -> throw $ WroteInputBus r)
-      act r
-    _ -> act r
+    _ -> return ()
+  act r
 
 
 -- | Return true if type 'b' can be "contained" by type 'a'
@@ -514,7 +512,10 @@ checkDef v@VarDef {..}
   -- Check that range is within type constraint
  = do
   res <- withTypeCtx (typeOf varDef) $ go varDef
-  return $ v {varDef = res}
+  val' <- case varVal of
+    Just dv -> Just <$> getConstVal dv
+    Nothing -> pure Nothing
+  return $ v {varDef = res, varVal = val'}
     -- TODO: Actually check that a) default value, if existing, is within type
     -- and range constraints and that range constraints, if existing, is within
     -- type bounds
@@ -529,24 +530,38 @@ checkDef v@VarDef {..}
       return $ Variable name ty e' range loc
 checkDef c@ConstDef {..} = do
   res <- go constDef
-  return $ c {constDef = res}
+  val' <- getConstVal constVal
+  return $ c {constDef = res, constVal = val'}
   where
     go ci@Constant {..} = do
       e' <- withTypeCtx ty $ checkExpr' val
       -- FIXME: This will emit a warning for non-int types.
       unless (isUnsized ty) $ tell [BoundedVarForConst ci ty]
       return $ Constant name ty e' loc
-checkDef b@BusDef {busDef = busDef} = do
+checkDef b@BusDef {busDef = busDef, busShape = busShape} = do
   res <- go busDef
-  return $ b {busDef = res}
+  bs' <- BusShape <$> mapM checkBS (unBusShape busShape)
+  return $ b {busDef = res, busShape = bs'}
   where
+    checkBS (i, (ty, e, r)) = do
+      e' <-
+        case e of
+          Just v  -> Just <$> getConstVal v
+          Nothing -> pure Nothing
+      return (i, (ty, e', r))
     go bd@Bus {signals = signals} = do
       signals' <-
         forM
           signals
-          (\bsig@BusSignal {..} ->
-             -- TODO: Check bus signal declared type against default value and range
-             return bsig)
+          (\bsig@BusSignal {..}
+             -- TODO: Check bus signal declared type against default value and
+             -- range
+            -> do
+             value' <-
+               case value of
+                 Just v  -> Just <$> getConstVal v
+                 Nothing -> pure Nothing
+             return (bsig {value = value'} :: BusSignal))
       return $ bd {signals = signals'}
 checkDef FunDef {..} = error "TODO: Function declarations unhandeled"
   -- TODO:
@@ -580,7 +595,7 @@ warnUnused = mapM_ go
 -- | Runs the type checked on a top-level definition
 checkTopDef :: TopDef -> TyM ()
 checkTopDef ProcessTable {stms = stms, procName = procName} = do
-  updateDefsM_ procName checkDef
+  withScope procName $ updateDefsM_ procName checkDef
   body' <- withScope procName $ do
     res <- mapM checkStm stms
     symTab <- symTable <$> getCurEnv
@@ -588,7 +603,7 @@ checkTopDef ProcessTable {stms = stms, procName = procName} = do
     return res
   updateTopDef procName  (\x -> x { stms = body'} )
 checkTopDef NetworkTable {netName = netName} = do
-  updateDefsM_ netName checkDef
+  withScope netName $ updateDefsM_ netName checkDef
   updateTopDef netName id
   withScope netName $ do
     symTab <- symTable <$> getCurEnv
@@ -612,13 +627,13 @@ buildDeclTab ctx = foldM go M.empty
     go m (VarDecl v@Variable {..}) = do
       defaultVal <-
         case val of
-          Just v' -> Just <$> exprReduceToLiteral v'
+          Just v' -> Just <$> exprReduceToSimpleExpr v'
           Nothing -> pure Nothing
       ensureUndef name m $
         return $
         M.insert (toString name) (VarDef name v Unused defaultVal Void) m
     go m (ConstDecl c@Constant {..}) = do
-      val' <- exprReduceToLiteral val
+      val' <- exprReduceToSimpleExpr val
       ensureUndef name m $
         return $ M.insert (toString name) (ConstDef name c Unused val' Void) m
     go m (BusDecl b@Bus {..}) = mkBusDecl m ctx b
@@ -715,7 +730,7 @@ buildNetTab net@Network {name = n, netDecls = d} = do
   return $ NetworkTable tab n [] net False Void
   where
     go m (NetConst c@Constant {..}) = do
-      val' <- exprReduceToLiteral val
+      val' <- getConstVal val
       ensureUndef name m $
         return $ M.insert (toString name) (ConstDef name c Unused val' Void) m
     go m (NetBus b) =
@@ -738,12 +753,21 @@ exprReduceToInt :: (MonadRepr s m) => Expr -> m Integer
 exprReduceToInt (PrimLit _ (LitInt i _) _) = return i
 exprReduceToInt e                          = throw $ ExprInvalidInContext e
 
-exprReduceToLiteral :: (MonadRepr s m) => Expr -> m Literal
-exprReduceToLiteral (PrimLit _ l _) = return l
--- TODO: Generalize this somehow
-exprReduceToLiteral (Unary _ (UnMinus _) (PrimLit _ (LitInt i loc) _) _) =
-  return (LitInt (-i) loc)
-exprReduceToLiteral e               = throw $ ExprInvalidInContext e
+exprReduceToSimpleExpr :: (MonadRepr s m) => Expr -> m Expr
+exprReduceToSimpleExpr e@(PrimLit t _ loc) = do
+  l' <- exprReduceToLiteral e
+  return (PrimLit t l' loc)
+exprReduceToSimpleExpr e@PrimName {} = return e
+exprReduceToSimpleExpr e = throw $ ExprInvalidInContext e
+
+-- TODO: This is a hack
+getConstVal :: (MonadRepr s m) => Expr -> m Expr
+getConstVal p@PrimLit {} = return p
+getConstVal PrimName {name = n@Name {..}} =
+  trackUsage Load n lookupDef >>= \case
+    ConstDef {..} -> return constVal
+    _ -> error "Only constants may be used as initializers"
+getConstVal _ = error "Only constants or literals may be used as initializers"
 
 busToShape :: (MonadRepr s m ) => Bus -> m BusShape
 busToShape Bus {signals = signals} = BusShape <$> mapM go signals
@@ -751,7 +775,7 @@ busToShape Bus {signals = signals} = BusShape <$> mapM go signals
     go BusSignal {..} = do
       val <-
         case value of
-          Just e  -> Just <$> exprReduceToLiteral e
+          Just e  -> Just <$> exprReduceToSimpleExpr e
           Nothing -> pure Nothing
       range' <-
         case range of

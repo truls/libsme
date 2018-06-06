@@ -594,7 +594,7 @@ mkBusInst exposed n bs busRef = do
         (unBusShape bs')
         (\case
            (i, (oTy@(Typed ty), lit, _)) -> do
-             let defVal = genDefaultValue lit
+             defVal <- genDefaultValue lit
              (i, ) <$>
                if isPuppet
                  then liftIO $ do
@@ -611,24 +611,24 @@ mkBusInst exposed n bs busRef = do
            _ -> bad "Illegal bus chan")
     toBusChans :: BusShape -> SimM [(Ident, BusChan)]
     toBusChans bs' =
-      mapM
+      forM
+        (unBusShape bs')
         (\(i, (ty, lit, _)) -> do
-           let defVal = genDefaultValue lit
+           defVal <- genDefaultValue lit
            (i, ) <$>
              liftIO
                (LocalChan i <$> newIORef defVal <*> newIORef defVal <*>
                 newIORef defVal <*>
                 newIORef defVal))
-        (unBusShape bs')
 
 
 -- genDefaultValue :: Maybe Literal -> Typeness -> SimM Value
 -- genDefaultValue Nothing ty = mkInitialValue ty
 -- genDefaultValue (Just l) _ = return $ toValue l
 
-genDefaultValue :: Maybe Literal -> Value
-genDefaultValue Nothing  = UndefVal
-genDefaultValue (Just l) = toValue l
+genDefaultValue :: Maybe Expr -> SimM Value
+genDefaultValue Nothing  = pure UndefVal
+genDefaultValue (Just l) = toValue <$> exprReduceToLiteral l
 
 mkInitialValue :: Typeness -> SimM Value
 mkInitialValue Untyped = bad "Untyped value in sim"
@@ -663,15 +663,16 @@ mkVtable ds vtab = foldM go vtab ds
       (defaultValue, minVal, maxVal) <-
         case varVal of
           Just v ->
-            case toValue v of
+            toValue <$> exprReduceToLiteral v >>= \case
               a@(ArrayVal _ av) -> pure (a, vminimum av, vmaximum av)
-              v'                -> pure (v', v', v')
+              v' -> pure (v', v', v')
           Nothing -> do
             iv <- mkInitialValue $ typeOf varDef
             return (iv, iv, iv)
       return $ M.insert varName (MutVal defaultValue minVal maxVal) m
-    go m ConstDef {..} =
-      return $ M.insert constName (ConstVal $ toValue constVal) m
+    go m ConstDef {..} = do
+      v <- toValue <$> exprReduceToLiteral constVal
+      return $ M.insert constName (ConstVal v) m
     go m EnumFieldDef {..} =
       return $ M.insert fieldName (ConstVal $ toValue fieldValue) m
     go m BusDef {..} = do

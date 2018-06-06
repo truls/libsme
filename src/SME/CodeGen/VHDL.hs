@@ -338,10 +338,12 @@ genPorts NetworkTable {} =
   return ([], [])
 
 -- | Return an expression setting the default value for a type
-genDefaultExpr :: Maybe Literal -> Typeness -> GenM V.Expression
+genDefaultExpr :: Maybe Expr -> Typeness -> GenM V.Expression
 genDefaultExpr sigVal ty =
   case sigVal of
-    Just e -> withType' ty $ genLit e
+    Just e -> do
+      e' <- exprReduceToLiteral e
+      withType' ty $ genLit e'
     Nothing ->
       case ty of
         Typed Array {..} -> do
@@ -591,7 +593,8 @@ genConstDecls dts =
     dts
     (\case
        ConstDef {..} -> do
-         litVal <- withType' Untyped (genLit constVal)
+         v <- exprReduceToLiteral constVal
+         litVal <- withType' Untyped (genLit v)
          return $
            Just
              [procdecl|constant $ident:(toString constName) :
@@ -607,7 +610,8 @@ genConstDeclsBlock dts =
     dts
     (\case
        ConstDef {..} -> do
-         litVal <- withType' Untyped (genLit constVal)
+         cv <- exprReduceToLiteral constVal
+         litVal <- withType' Untyped (genLit cv)
          return $
            Just
              [blockdecl|constant $ident:(toString constName) :
@@ -685,7 +689,7 @@ genInstDecls dts =
         zipWithM
           (\(_, parType) p ->
              case (parType, p) of
-               (BusPar {..}, InstBusPar par) -> do
+               (BusPar {..}, InstBusPar par) ->
                  --busName <- refOf . nameOf <$> lookupDef ref
                  return $ Just (ref, genPortMap par localRef parBusShape)
                  --return $ Just (ref, genPortMap (par <> (Ident "genPortparammap" noLoc N.:| [])) localRef parBusShape)

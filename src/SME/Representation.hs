@@ -50,6 +50,7 @@ module SME.Representation
   , vmin
   , vmaximum
   , vminimum
+  , exprReduceToLiteral
   ) where
 
 import           Control.Exception               (throw)
@@ -531,13 +532,13 @@ data BaseDefType a
            , varDef   :: Variable
            , varState :: VarState
            --, varVa
-           , varVal   :: Maybe Literal
+           , varVal   :: Maybe Expr
            -- , varRange :: (Integer, Integer)
            , ext      :: a }
   | ConstDef { constName  :: Ident
              , constDef   :: Constant
              , constState :: VarState
-             , constVal   :: Literal
+             , constVal   :: Expr
              , ext        :: a }
   | BusDef { busName   :: Ident
            , busRef    :: Ref -- ^ The global reference to the bus declaration
@@ -600,6 +601,13 @@ instance Nameable (BaseDefType a) where
   nameOf EnumFieldDef {..} = fieldName
   nameOf InstDef {..}      = instName
   nameOf ParamDef {..}     = paramName
+
+exprReduceToLiteral :: (MonadRepr s m) => Expr -> m Literal
+exprReduceToLiteral (PrimLit _ l _) = return l
+-- TODO: Generalize this somehow
+exprReduceToLiteral (Unary _ (UnMinus _) (PrimLit _ (LitInt i loc) _) _) =
+  return (LitInt (-i) loc)
+exprReduceToLiteral e               = throw $ ExprInvalidInContext e
 
 -- | Sets the type of a definition when possible
 setType ::
@@ -672,7 +680,7 @@ lookupTy r = do
 -- TODO: Maybe change this to a map
 newtype BusShape = BusShape
   -- Tuple is, type, default val, range
-  { unBusShape :: [(Ident, (Typeness, Maybe Literal, Maybe (Literal, Literal)))]
+  { unBusShape :: [(Ident, (Typeness, Maybe Expr, Maybe (Literal, Literal)))]
   } deriving (Show, Data)
 
 instance Eq BusShape where
