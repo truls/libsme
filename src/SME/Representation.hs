@@ -48,6 +48,9 @@ module SME.Representation
   , truncateAsType
   , vmax
   , vmin
+  , vlt
+  , vleq
+  , vgt
   , vmaximum
   , vminimum
   , exprReduceToLiteral
@@ -454,6 +457,7 @@ instance Ord Value
   (SingleVal _) `compare` (DoubleVal _) = LT -- TODO
   (ArrayVal _ a) `compare` b = maximum a `compare` b
   a `compare` (ArrayVal _ b) = a `compare` maximum b
+  UndefVal `compare` UndefVal = EQ
   UndefVal `compare` _ = error "Comparison with undef"
   _ `compare` UndefVal = error "Comparison with undef"
 
@@ -482,11 +486,27 @@ absValue (DoubleVal v) = DoubleVal $ abs v
 absValue (SingleVal v) = SingleVal $ abs v
 absValue v             = v
 
--- | Returns the maximum of two values
+vlt :: Value -> Value -> Bool
+vlt UndefVal _ = True
+vlt _ UndefVal = True
+vlt v1 v2      = v1 < v2
+
+vleq :: Value -> Value -> Bool
+vleq UndefVal _ = True
+vleq _ UndefVal = True
+vleq v1 v2      = v1 <= v2
+
+vgt :: Value -> Value -> Bool
+vgt UndefVal _ = True
+vgt _ UndefVal = True
+vgt v1 v2      = v1 > v2
+
 vcmp :: (Value -> Value -> Value) -> Value -> Value -> Value
-vcmp _ UndefVal v = v
-vcmp _ v UndefVal = v
-vcmp f v1 v2      = f v1 v2
+vcmp f v1 v2
+  | v1 == UndefVal && v2 == UndefVal = v1
+  | v1 == UndefVal && v2 /= UndefVal = v2
+  | v1 /= UndefVal && v2 == UndefVal = v1
+  | otherwise = f v1 v2
 
 vmin :: Value -> Value -> Value
 vmin = vcmp min

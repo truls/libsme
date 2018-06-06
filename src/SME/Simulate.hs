@@ -263,25 +263,28 @@ evalStm Assign {..} = do
   r <- evalExpr val
   ty <- lookupTy dest
   setValueVtab dest (truncateAsType r ty)
-evalStm If {..} = do
-  c <- evalCondPair [(cond, body)]
-  unless c $ do
-    c' <- evalCondPair elif
-    case els of
-      Nothing -> return ()
-      Just ss -> unless c' (mapM_ evalStm ss)
+evalStm If {..} =
+  evalCondPair [(cond, body)] >>= \case
+    Right c ->
+      unless c $
+        evalCondPair elif >>= \case
+          Right c' ->
+            case els of
+              Nothing -> return ()
+              Just ss -> unless c' (mapM_ evalStm ss)
+          Left () -> return ()
+    Left () -> return ()
   where
-    evalCondPair ((e, ss):conds) = do
-      c <-
-        evalExpr e >>= \case
-          (BoolVal v) -> pure v
-          _ -> bad "Type error in if"
-      if c
-        then do
+    evalCondPair ((e, ss):conds) =
+      evalExpr e >>= \case
+        (BoolVal True) -> do
           mapM_ evalStm ss
-          return c
-        else evalCondPair conds
-    evalCondPair [] = return False
+          return $ Right True
+        (BoolVal False) -> evalCondPair conds
+        -- FIXME: Is this sane?
+        UndefVal -> return $ Left ()
+        _ -> bad "Type error in if"
+    evalCondPair [] = return $ Right False
 
 evalStm Switch {..} = do
   val <- evalExpr value
@@ -320,21 +323,23 @@ evalStm Assert {..} =
     evalExpr cond >>= \case
       (BoolVal False) -> throw $ AssertionError cond (T.unpack <$> str)
       (BoolVal True) -> return ()
+      UndefVal -> return ()
       _ -> bad "Assertion not a boolean"
 
 evalStm For {..} = do
   start <- evalExpr from
   end <- evalExpr to
-  let ops =
-        if start <= end
-          then (PlusOp noLoc, GeqOp noLoc)
-          else (MinusOp noLoc, LeqOp noLoc)
-  end' <- evalBinOp (fst ops) end (toValue (1 :: Integer))
-  -- We abuse the vtable a bit here and use it to hold a "breakguard" variable
-  -- which is set to true by the break statement.
-  -- FIXME: Handle this in a nicer way
-  withBreakGuard $
-    withLocalVar var start $ loop ops start end' (identToName var)
+  unless (UndefVal `elem` [start, end]) $ do
+    let ops =
+          if start <= end
+            then (PlusOp noLoc, GeqOp noLoc)
+            else (MinusOp noLoc, LeqOp noLoc)
+    end' <- evalBinOp (fst ops) end (toValue (1 :: Integer))
+    -- We abuse the vtable a bit here and use it to hold a "breakguard" variable
+    -- which is set to true by the break statement.
+    -- FIXME: Handle this in a nicer way
+    withBreakGuard $
+      withLocalVar var start $ loop ops start end' (identToName var)
   where
     checkBreakGuard =
       getBreakGuard >>= \case
@@ -621,11 +626,6 @@ mkBusInst exposed n bs busRef = do
                 newIORef defVal <*>
                 newIORef defVal))
 
-
--- genDefaultValue :: Maybe Literal -> Typeness -> SimM Value
--- genDefaultValue Nothing ty = mkInitialValue ty
--- genDefaultValue (Just l) _ = return $ toValue l
-
 genDefaultValue :: Maybe Expr -> SimM Value
 genDefaultValue Nothing  = pure UndefVal
 genDefaultValue (Just l) = toValue <$> exprReduceToLiteral l
@@ -634,25 +634,30 @@ mkInitialValue :: Typeness -> SimM Value
 mkInitialValue Untyped = bad "Untyped value in sim"
 mkInitialValue (Typed t) = go t
   where
-    -- go Signed {} = return $ toValue (0 :: Int)
-    -- go Unsigned {} = return $ toValue (0 :: Int)
-    go Signed {} = return UndefVal
+    go Signed {}   = return UndefVal
     go Unsigned {} = return UndefVal
-    go Single {} = return $ toValue (0 :: Float)
-    go Double {} = return $ toValue (0 :: Double)
-    go Bool {} = return $ toValue False
-    go String {} = undefined
-    go Array {..} = do
-      len <-
-        case arrLength of
-          Just e ->
-            evalConstExpr e >>= \case
-              IntVal v -> pure (fromIntegral v)
-              _ -> bad "Non-integer array length"
-          Nothing -> bad "No array len" -- FIXME
-      toValue <$>
-        replicateM len (mkInitialValue (typeOf innerTy))
+    go Single {}   = return $ toValue (0 :: Float)
+    go Double {}   = return $ toValue (0 :: Double)
+    go Bool {}     = return $ toValue False
+    go String {}   = undefined
+    go Array {..}  = mkArray arrLength =<< mkInitialValue (typeOf innerTy)
 
+mkArray :: Maybe Expr -> Value -> SimM Value
+mkArray arrLength dv = do
+  len <-
+    case arrLength of
+      Just e ->
+        evalConstExpr e >>= \case
+        IntVal v -> pure (fromIntegral v)
+        _ -> bad "Non-integer array length"
+      Nothing -> bad "No array len" -- FIXME
+  return $ toValue $ replicate len dv
+
+-- TODO: Normalize array initalizations somewhere else
+arrayifyVal :: Typeness -> Value -> SimM Value
+arrayifyVal (Typed Array {..} ) v@ArrayVal {} = return v
+arrayifyVal (Typed Array {..}) v              = mkArray arrLength v
+arrayifyVal _ v                               = return v
 
 -- | Creates a new vtable @ds@ from a list of definitions, adding to table
 -- passed as 'vtab'
@@ -660,15 +665,15 @@ mkVtable :: [DefType] -> VTable -> SimM VTable
 mkVtable ds vtab = foldM go vtab ds
   where
     go m VarDef {..} = do
-      (defaultValue, minVal, maxVal) <-
+      v <-
         case varVal of
-          Just v ->
-            toValue <$> exprReduceToLiteral v >>= \case
-              a@(ArrayVal _ av) -> pure (a, vminimum av, vmaximum av)
-              v' -> pure (v', v', v')
-          Nothing -> do
-            iv <- mkInitialValue $ typeOf varDef
-            return (iv, iv, iv)
+          Just v' ->
+            arrayifyVal (typeOf varDef) =<< toValue <$> exprReduceToLiteral v'
+          Nothing -> mkInitialValue $ typeOf varDef
+      let (defaultValue, minVal, maxVal) =
+            case v of
+              a@(ArrayVal _ av) -> (a, vminimum av, vmaximum av)
+              v'                -> (v', v', v')
       return $ M.insert varName (MutVal defaultValue minVal maxVal) m
     go m ConstDef {..} = do
       v <- toValue <$> exprReduceToLiteral constVal
@@ -857,7 +862,8 @@ setValueVtab name@Name {parts = parts} v' = go parts
                 cur ->
                   bad
                     ("Non-array value " ++
-                     pprrString name ++ " " ++ show (locOf name) ++ " " ++ show cur)
+                     pprrString name ++
+                     " " ++ show (locOf name) ++ " " ++ show cur)
     go (i :| [i2]) = do
       i' <- ensureNamePartIdent i
       i2' <- ensureNamePartIdent i2
@@ -1325,7 +1331,7 @@ minMaxInGroup (i1:i2:is) = go i1 (i2 : is)
     go c@(n1, va1, va2) (e@(n2, vb1, vb2):es)
       | n1 /= n2 = c : go e es
       -- FIXME: This is not safe now that Ord instance is partial
-      | vb1 < va1 || vb2 > va2 = go (n2, vmin vb1 va1, vmax vb2 va2) es
+      | vb1 `vlt` va1 || vb2 `vgt` va2 = go (n2, vmin vb1 va1, vmax vb2 va2) es
       | otherwise = go c es
     go c [] = [c]
 
