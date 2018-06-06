@@ -729,16 +729,14 @@ buildNetTab net@Network {name = n, netDecls = d} = do
   tab <- foldM go M.empty d
   return $ NetworkTable tab n [] net False Void
   where
-    go m (NetConst c@Constant {..}) = do
-      val' <- getConstVal val
+    go m (NetConst c@Constant {..}) =
       ensureUndef name m $
-        return $ M.insert (toString name) (ConstDef name c Unused val' Void) m
-    go m (NetBus b) =
-      mkBusDecl m n b
-    go m (NetInst i) =
+        return $ M.insert (toString name) (ConstDef name c Unused val Void) m
+    go m (NetBus b) = mkBusDecl m n b
+    go m (NetInst i)
          -- TODO: Maybe we can handle indexed instances by adding a separate
          -- DefType entry IndexedInstDef
-      mkInstDecl m i
+     = mkInstDecl m i
     go _ NetGen {} = error "TODO: Generator declarations are unhandeled"
 
 -- | Reduce an expression to a name and fail if impossible
