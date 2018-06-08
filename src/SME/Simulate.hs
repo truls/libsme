@@ -419,25 +419,25 @@ evalBinOp DisOp   {} (BoolVal i)   (BoolVal j)     = pure $ BoolVal $ i || j
 evalBinOp GeqOp   {} (IntVal i)    (IntVal j)      = pure $ BoolVal $ i >= j
 evalBinOp GeqOp   {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i >= j
 evalBinOp GeqOp   {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i >= j
-evalBinOp GeqOp   {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i >= j
-evalBinOp GtOp    {} (IntVal i) (IntVal j)          = pure $ BoolVal $ i > j
-evalBinOp GtOp {} (DoubleVal i) (DoubleVal j)    = pure $ BoolVal $ i > j
-evalBinOp GtOp {} (SingleVal i) (SingleVal j)    = pure $ BoolVal $ i > j
-evalBinOp GtOp {} (BoolVal i) (BoolVal j)        = pure $ BoolVal $ i > j
-evalBinOp LeqOp {} (IntVal i) (IntVal j)         = pure $ BoolVal $ i <= j
-evalBinOp LeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i <= j
-evalBinOp LeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i <= j
-evalBinOp LeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i <= j
-evalBinOp LtOp {} (IntVal i) (IntVal j)          = pure $ BoolVal $ i < j
-evalBinOp LtOp {} (DoubleVal i) (DoubleVal j)    = pure $ BoolVal $ i < j
-evalBinOp LtOp {} (SingleVal i) (SingleVal j)    = pure $ BoolVal $ i < j
-evalBinOp LtOp {} (BoolVal i) (BoolVal j)        = pure $ BoolVal $ i < j
-evalBinOp NeqOp {} (IntVal i) (IntVal j)         = pure $ BoolVal $ i /= j
-evalBinOp NeqOp {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i /= j
-evalBinOp NeqOp {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i /= j
-evalBinOp NeqOp {} (BoolVal i) (BoolVal j)       = pure $ BoolVal $ i /= j
-evalBinOp _        UndefVal    _                 = pure UndefVal
-evalBinOp _        _           UndefVal          = pure UndefVal
+evalBinOp GeqOp   {} (BoolVal i)   (BoolVal j)     = pure $ BoolVal $ i >= j
+evalBinOp GtOp    {} (IntVal i)    (IntVal j)      = pure $ BoolVal $ i > j
+evalBinOp GtOp    {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i > j
+evalBinOp GtOp    {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i > j
+evalBinOp GtOp    {} (BoolVal i)   (BoolVal j)     = pure $ BoolVal $ i > j
+evalBinOp LeqOp   {} (IntVal i)    (IntVal j)      = pure $ BoolVal $ i <= j
+evalBinOp LeqOp   {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i <= j
+evalBinOp LeqOp   {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i <= j
+evalBinOp LeqOp   {} (BoolVal i)   (BoolVal j)     = pure $ BoolVal $ i <= j
+evalBinOp LtOp    {} (IntVal i)    (IntVal j)      = pure $ BoolVal $ i < j
+evalBinOp LtOp    {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i < j
+evalBinOp LtOp    {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i < j
+evalBinOp LtOp    {} (BoolVal i)   (BoolVal j)     = pure $ BoolVal $ i < j
+evalBinOp NeqOp   {} (IntVal i)    (IntVal j)      = pure $ BoolVal $ i /= j
+evalBinOp NeqOp   {} (DoubleVal i) (DoubleVal j)   = pure $ BoolVal $ i /= j
+evalBinOp NeqOp   {} (SingleVal i) (SingleVal j)   = pure $ BoolVal $ i /= j
+evalBinOp NeqOp   {} (BoolVal i)   (BoolVal j)     = pure $ BoolVal $ i /= j
+evalBinOp _           UndefVal     _               = pure UndefVal
+evalBinOp _           _            UndefVal        = pure UndefVal
 
 evalBinOp o v1 v2 =
   bad
