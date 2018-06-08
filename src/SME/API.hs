@@ -1,38 +1,36 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE LambdaCase               #-}
-{-# LANGUAGE ScopedTypeVariables      #-}
+{-# LANGUAGE ForeignFunctionInterface   #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
 
 module SME.API
   (
   ) where
 
-import           Control.Exception     (try, tryJust)
-import           Control.Monad         (unless)
-import           Foreign               (Ptr)
-import           Foreign.C.String      (CString, peekCString, withCString)
-import           Foreign.Marshal.Array (peekArray)
-import           Foreign.StablePtr     (StablePtr, deRefStablePtr,
-                                        freeStablePtr, newStablePtr)
+import           Control.Exception      (try)
+import           Control.Monad          ((>=>))
+import           Control.Monad.IO.Class (liftIO)
+import           Control.Monad.Reader   (local)
+import           Control.Monad.State    (MonadState (put), StateT, gets, lift,
+                                         runStateT)
+import           Foreign                (Ptr)
+import           Foreign.C.String       (CString, peekCString, withCString)
+import           Foreign.Marshal.Array  (peekArray)
+import           Foreign.StablePtr      (StablePtr, deRefStablePtr,
+                                         freeStablePtr, newStablePtr)
 
-import qualified Data.Text.IO          as T
-import           Options.Applicative   (ParserResult (..), defaultPrefs,
-                                        execParserPure, info)
+import           Options.Applicative    (ParserResult (..), defaultPrefs,
+                                         execParserPure, info)
 
-import           Language.SMEIL.Pretty
 import           SME.API.Internal
-import           SME.CodeGen
 import           SME.Error
-import           SME.ImportResolver
-import           SME.Reconstruct
 import           SME.Representation
 import           SME.Simulate
 import           SME.Stages
-import           SME.TypeCheck
 
 --import           Debug.Trace
 
-trace :: String -> a -> a
-trace _ = id
+-- trace :: String -> a -> a
+-- trace _ = id
 
 -- traceM :: (Applicative f) => String -> f ()
 -- traceM _ = pure ()
@@ -56,8 +54,8 @@ foreign export ccall "hs_gen_code"
 
 foreign import ccall "sme_set_sim_state"
   sme_set_sim_state :: SmeCtxPtr -> SimCtxPtr -> IO ()
-foreign import ccall "sme_get_sim_state"
-  sme_get_sim_state :: SmeCtxPtr -> IO SimCtxPtr
+-- foreign import ccall "sme_get_sim_state"
+--   sme_get_sim_state :: SmeCtxPtr -> IO SimCtxPtr
 foreign import ccall "sme_set_error"
   sme_set_error :: SmeCtxPtr -> CString -> IO ()
 
@@ -66,13 +64,78 @@ data ApiCtx = ApiCtx
   , tyState       :: Env
   , simState      :: SimEnv
   , apiConf       :: Config
-  , errorRenderer :: TypeCheckErrors -> String
+  , compilerState :: CompilerState
   }
+
+mkApiCtx :: SmeCtxPtr -> ApiCtx
+mkApiCtx ptr =
+  ApiCtx
+  { libCtx = ptr
+  , tyState = mkEnv mkConfig Void
+  , simState = mkEnv mkConfig emptyExt
+  , apiConf = mkConfig
+  , compilerState = mkCompilerState
+  }
+
+newtype ApiM a = ApiM
+  { unApiM :: StateT ApiCtx CompilerM a
+  } deriving (Functor, Applicative, Monad, MonadIO, MonadState ApiCtx)
+
+type ActRet a = Either () (a, ApiCtx)
+
+runApiM :: ApiCtx -> ApiM a -> IO (ActRet a)
+runApiM api@ApiCtx {apiConf = cfg, compilerState = cs} f
+ = do
+  res <- try $ runCompilerM cfg cs (handleErrors $ runStateT (unApiM f) api)
+  case res of
+    Right ((v, api'), cs')    -> return $ Right (v, api' {compilerState = cs'})
+    Left (e :: SomeException) -> do setError (libCtx api) (show e)
+                                    return $ Left ()
+
+liftApiM :: CompilerM a -> ApiM a
+liftApiM = ApiM . lift
 
 setError :: SmeCtxPtr -> String -> IO ()
 setError ptr e = withCString e (sme_set_error ptr)
 
 
+loadPipe :: FilePath -> ApiM (BaseEnv Void)
+loadPipe fp = liftApiM $ (doImports >=> doTypeCheck) fp
+
+postSimPipe :: SimEnv -> ApiM (BaseEnv Void)
+postSimPipe e = liftApiM $ (doReconstruct >=> doTypeCheck) (Void <$ e)
+
+genCodePipe :: FilePath -> ApiM ()
+genCodePipe fp = do
+  st <- gets tyState
+  liftApiM $ local (\x -> x {outputDir = Just fp}) (doOutput st)
+
+initSim :: SmeCtxPtr -> Env -> ApiM SimEnv
+initSim p e = liftIO $ newSteppingSim p e
+
+runSimStep :: (SimEnv -> IO SimEnv) -> ApiM SimEnv
+runSimStep act = do
+  ss <- gets simState
+  liftIO $ act ss
+
+runSimFinalize, runSimProcs, runSimBuses :: ApiM SimEnv
+runSimFinalize = runSimStep finalizeSim
+runSimProcs = runSimStep procStep
+runSimBuses = runSimStep busStep
+
+apiAction :: SimCtxPtr -> (ApiCtx -> a -> ApiCtx) -> ApiM a -> IO Bool
+apiAction c f act = do
+  ctx <- deRefStablePtr c
+  freeStablePtr c
+  runApiM ctx act >>= finishApiRet f
+
+finishApiRet :: (ApiCtx -> a -> ApiCtx) -> ActRet a ->  IO Bool
+finishApiRet _ (Left ()) = return False
+finishApiRet f (Right (r, ctx)) = do
+  let ctx' = f ctx r
+  ptr' <- newStablePtr ctx
+  sme_set_sim_state (libCtx ctx') ptr'
+  return True
 
 loadFile :: SmeCtxPtr -> CString -> Int -> CStringArray -> IO Bool
 loadFile c f n arr = do
@@ -82,120 +145,35 @@ loadFile c f n arr = do
     Failure fa -> do
       setError c (show fa)
       return False
-    Success a -> go a
-  where
-    go conf = do
-      file <- peekCString f
-      -- TODO: Catch IO errors here
-      try (resolveImports file) >>= \case
-        Left e -> do
-          setError c (show (e :: ImportingError)) --(renderError nameMap e)
-          return False
-        Right (df, nameMap) -> do
-          res <- try (typeCheck df conf)
-          case res of
-            Left e ->
-              trace "first res left" $
-              setError c (renderError nameMap (e :: TypeCheckErrors)) >>
-              return False
-            Right (r, w) -> do
-              unless (noWarnings conf) (printWarnings w)
-              newSteppingSim r c >>= \case
-                Left e ->
-                  trace "second res lefft" $
-                  setError c (renderError nameMap e) >> return False
-                Right r' ->
-                  trace "second res right" $ do
-                    --putStrLn (ppShow (defs (Void <$ r')))
-                    ptr <-
-                      newStablePtr
-                        ApiCtx
-                        { libCtx = c
-                        , simState = r'
-                        , tyState = Void <$ r'
-                        , errorRenderer = renderError nameMap
-                        , apiConf = conf
-                        }
-                    sme_set_sim_state c ptr
-                    return True
-
-runStep ::
-     SimCtxPtr -> (SimEnv -> IO (Either TypeCheckErrors SimEnv)) -> IO Bool
-runStep c f = do
-  ctx <- deRefStablePtr c
-  freeStablePtr c
-  res <-
-    tryJust
-      (\(e :: TypeCheckErrors) -> Just $ errorRenderer ctx e)
-      (f (simState ctx))
-  case res of
-    Right s ->
-      case s of
-        Right s' ->
-          trace "runStep right" $ do
-            sme_set_sim_state (libCtx ctx) =<< newStablePtr ctx {simState = s'}
-            return True
-        Left e -> setError (libCtx ctx) (errorRenderer ctx e) >> return False
-    Left e ->
-      trace "runStep left" $ do
-        setError (libCtx ctx) e
-        return False
+    Success cfg ->
+      peekCString f >>=
+      (\fp ->
+         runApiM
+           (mkApiCtx c)
+           (do e <- loadPipe fp
+               se <- initSim c e
+               put
+                 ApiCtx
+                 { libCtx = c
+                 , tyState = e
+                 , simState = se
+                 , apiConf = cfg
+                 , compilerState = mkCompilerState
+                 }) >>=
+         finishApiRet const)
 
 genCode :: SimCtxPtr -> CString -> IO Bool
 genCode c n = do
-  -- TODO: If simulation was run, make sure that finalize was also run before
-  -- genCode is called.
-  ctx <- deRefStablePtr c
-  freeStablePtr c
-  s' <- peekCString n
-  T.putStrLn (pprr (reconstruct (tyState ctx)))
-  --putStrLn $ ppShow (reconstruct (tyState ctx)) --(tyState ctx)
-  try (genOutput s' VHDL (tyState ctx)) >>= \case
-    Left e -> do
-      setError (libCtx ctx) (show (e :: TypeCheckErrors))
-      return False
-    Right _ -> return True
+  n' <- peekCString n
+  apiAction c const (genCodePipe n')
 
-propagateBuses :: SimCtxPtr -> IO Bool
-propagateBuses c = runStep c busStep
+simAction :: ApiM SimEnv -> SimCtxPtr -> IO Bool
+simAction act c = apiAction c (\x e -> x { simState = e }) act
 
-runProcs :: SimCtxPtr -> IO Bool
-runProcs c = runStep c procStep
-
--- Duplicating this here is a bit hackish
-runTypeCheck :: SimCtxPtr -> IO Bool
-runTypeCheck c = do
-  ctx <- deRefStablePtr c
-  freeStablePtr c
-  let conf = apiConf ctx
-  res <- try (typeCheck (reconstruct (Void <$ simState ctx)) (apiConf ctx))
-  case res of
-    Left e -> do
-      setError (libCtx ctx) (errorRenderer ctx (e :: TypeCheckErrors))
-      return False
-    Right (r, w)
-      -- FIXME: This really shouldn't be needed. We do it to set the toplevel
-      -- attribute.
-     -> do
-      unless (noWarnings conf) (printWarnings w)
-      initSimEnv r (libCtx ctx) >>= \case
-        Left e ->
-          trace "second res lefft" $
-          setError (libCtx ctx) (errorRenderer ctx e) >> return False
-        Right r' -> do
-          sme_set_sim_state (libCtx ctx) =<<
-            newStablePtr ctx {tyState = Void <$ r'}
-          return True
+propagateBuses, runProcs :: SimCtxPtr -> IO Bool
+propagateBuses = simAction runSimBuses
+runProcs = simAction runSimProcs
 
 finalize :: SimCtxPtr -> IO Bool
-finalize c
-  -- This is also _very_ hackish
- = do
-  smeCtx <- libCtx <$> deRefStablePtr c
-  -- StablePtr is freed by call to runStep
-  res <- runStep c finalizeSim
-  if res
-    then do
-      ctx <- sme_get_sim_state smeCtx
-      runTypeCheck ctx
-    else return res
+finalize c =
+  apiAction c (\x e -> x {tyState = e}) (runSimFinalize >>= postSimPipe)

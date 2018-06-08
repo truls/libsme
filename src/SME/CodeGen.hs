@@ -5,7 +5,6 @@ module SME.CodeGen
   , Language(..)
   ) where
 
-import           Control.Exception  (throw, throwIO)
 import           Control.Monad      (forM_, unless, when)
 import qualified Data.Text.IO       as TIO
 import           System.Directory   (createDirectory, doesDirectoryExist)
@@ -35,14 +34,10 @@ genOutput' Python = genPython
 
 genOutput :: FilePath -> Language -> Env -> IO ()
 genOutput destdir lang env = do
-  let (res, _) = runGenM env (genOutput' lang)
+  let res = runGenM env (genOutput' lang)
   let forceMkDir = (force . config) env
   exists <- doesDirectoryExist destdir
-  when (exists && not forceMkDir) (throwIO (DirAlreadyExists destdir))
+  when (exists && not forceMkDir) (throw (DirAlreadyExists destdir))
   unless exists $ createDirectory destdir
-  plan <-
-    case res of
-      Left e  -> throw e
-      Right r -> pure r
-  forM_ plan $ writeOutput destdir
+  throwEither res >>= (\(x, _) -> forM_ x $ writeOutput destdir)
   return ()

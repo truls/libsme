@@ -9,19 +9,18 @@
 module SME.ImportResolver
   ( resolveImports
   , RenameState
+  , NameMap
   ) where
 
-import           Control.Arrow               (first)
-import           Control.Exception           (throw)
 import           Control.Monad               (unless)
 import           Control.Monad.State.Strict
 import qualified Data.Bimap                  as B
 import           Data.Generics.Uniplate.Data (transformBiM, universeBi)
+import qualified Data.HashMap.Strict         as M
 import           Data.List                   (intersect, nub, (\\))
 import           Data.List.NonEmpty          (NonEmpty (..), (<|))
 import qualified Data.List.NonEmpty          as N
 import           Data.Loc
-import qualified Data.Map.Strict             as M
 import           Data.Maybe                  (fromMaybe)
 import           Data.Semigroup              ((<>))
 import qualified Data.Text                   as T
@@ -33,7 +32,6 @@ import           System.FilePath.Posix       (joinPath, takeDirectory, (<.>),
 import           Language.SMEIL.Parser
 import           Language.SMEIL.Syntax
 import           SME.Error
-
 
 data RenameState = RenameState
   { nameMap    :: B.Bimap Ident Ref
@@ -78,7 +76,7 @@ toModName ids = T.intercalate "_" (map toText (N.toList ids))
 importError :: FilePath -> SrcLoc -> IO ()
 importError f ss = throw $ ImportNotFoundError f ss
 
-parseFile :: (MonadIO m) => FilePath -> SrcLoc -> m DesignFile
+parseFile :: (MonadIO m, MonadThrow m) => FilePath -> SrcLoc -> m DesignFile
 parseFile fp ss = do
   liftIO $ doesFileExist fp >>= flip unless (importError fp ss)
   modSrc <- liftIO $ TIO.readFile fp
@@ -272,7 +270,7 @@ renameRefs = transformBiM go
 -- occur.
 -- TODO: Use forward-passed list of defined names to ensure that we don't rename
 -- modules such that name-clashes will occur
-parseModule :: (MonadIO m) => ModuleCtx -> PaM m DesignFile
+parseModule :: (MonadIO m, MonadThrow m) => ModuleCtx -> PaM m DesignFile
 parseModule ModuleCtx {..} = do
   res <- liftIO $ parseFile modulePath stmLocation
   let imports = universeBi res :: [Import]
@@ -322,10 +320,11 @@ parseModule ModuleCtx {..} = do
 
 -- | Resolves all imports and inlines them returning a "flat" SMEIL
 -- program. Imported entities are inlined as appropriate
-resolveImports :: (MonadIO m) => FilePath -> m (DesignFile, M.Map String Ref)
+resolveImports ::
+     (MonadIO m, MonadThrow m) => FilePath -> m (DesignFile, NameMap)
 resolveImports fp = do
   fp' <- liftIO $ makeAbsolute fp
   (m, s) <-
     runStateT (parseModule (mkModuleCtx {modulePath = fp'})) mkRenameState
   -- TODO: Maybe the BiMap is redundant
-  return (m, M.fromList (map (first toString) (B.toList (nameMap s))))
+  return (m, M.fromList (B.toList (nameMap s)))

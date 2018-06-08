@@ -10,7 +10,6 @@
 module SME.CodeGen.VHDL (genVHDL) where
 
 import           Control.Arrow               (first, (***))
-import           Control.Exception           (throw)
 import           Control.Monad               (forM, mapM, zipWithM)
 import           Control.Monad.State         (gets)
 import           Data.List                   (intercalate, nub, partition,
@@ -109,10 +108,7 @@ genLit l@LitInt {..} =
     Typed (Signed (Just s) _) -> pure [expr|to_signed($lit:intVal, $lit:s)|]
     Typed (Unsigned (Just s) _) -> pure [expr|to_unsigned($lit:intVal, $lit:s)|]
     Untyped -> pure [expr|$lit:intVal|]
-    t ->
-      throw $
-      InternalCompilerError
-        ("Int literal with non-int type " ++ show t ++ " " ++ show l)
+    t -> bad ("Int literal with non-int type " ++ show t ++ " " ++ show l)
 genLit LitFloat {..} = pure [expr|$lit:floatVal|]
 genLit LitString {..} = pure [expr|$lit:stringVal|]
 genLit LitArray {..}  =
@@ -205,9 +201,7 @@ genStm Assign {..} = do
   lookupDef dest >>= \case
     BusDef {} -> return [seqstm|$name:d <= $expr:target;|]
     VarDef {} -> return [seqstm|$name:d := $expr:target;|]
-    _ ->
-      throw $
-      CompilerError "Unassignable constructs should never occur at this point"
+    _ -> bad "Unassignable constructs should never occur at this point"
 genStm If {..} = do
   c <- genExpr cond
   b <- mapM genStm body
@@ -330,10 +324,7 @@ genPorts pt@ProcessTable {..} =
                                        $expr:dval|]
                          , Just [seqstm|$ident:n <= $expr:dval;|])
                      _ -> return (Nothing, Nothing))
-         _ ->
-           throw $
-           InternalCompilerError
-             "genPorts received a non-bus type from lookupDef")
+         _ -> bad "genPorts received a non-bus type from lookupDef")
 genPorts NetworkTable {} =
   return ([], [])
 
@@ -355,7 +346,7 @@ genDefaultExpr sigVal ty =
           withType' ty (genLit dl)
 
 genDefaultLit :: Typeness -> GenM Literal
-genDefaultLit Untyped = throw $ InternalCompilerError "Untyped value in gen"
+genDefaultLit Untyped = bad "Untyped value in gen"
 genDefaultLit (Typed t) = go t
   where
     go Signed {}   = return $ LitInt 0 noLoc
@@ -756,7 +747,7 @@ getUsedBusesOfInsts current dts = do
                 -- duplicated signal names.
                 (False, Output) -> pure [(Nothing, n, bs)]
                 (False, _)      -> pure []
-         _ -> throw $ InternalCompilerError "Bus is not a bus")
+         _ -> bad "Bus is not a bus")
 
 
 genChName :: Bool -> Ident -> Ident -> Ref

@@ -12,12 +12,10 @@ module SME.TypeCheck
   ( typeCheck
   ) where
 
-import           Control.Exception           (throw, throwIO)
+import           Control.Exception.Safe
 import           Control.Monad               (foldM, forM, forM_, unless,
                                               zipWithM)
-import           Control.Monad.Except        (MonadError)
-
-import           Control.Monad.Identity      (Identity, runIdentity)
+import           Control.Monad.Identity      (runIdentity)
 import           Control.Monad.Reader        (MonadReader, ReaderT, asks, local,
                                               runReaderT)
 import           Control.Monad.State         (MonadState)
@@ -71,17 +69,19 @@ type SymTab = BaseSymTab Void
 
 -- | Main typechecking monad
 newtype TyM a = TyM
-  { unTyM :: ReaderT Context (WriterT Warns (ReprM Identity Void)) a
+  { unTyM :: ReaderT Context (WriterT Warns (ReprM (Either SomeException) Void)) a
   } deriving ( Functor
              , Applicative
              , Monad
              , MonadReader Context
              , MonadWriter Warns
              , MonadState Env
-             , MonadError TypeCheckErrors
+             --, MonadError TypeCheckErrors
+             , MonadThrow
              )
 
 instance (MonadRepr Void) TyM
+--instance (MonadThrow) TyM
 
 data AccessType
   = Store
@@ -610,10 +610,10 @@ checkTopDef NetworkTable {netName = netName} = do
     warnUnused (M.elems symTab)
 
 -- | Throws if passed a compound name
-ensureSingleRef :: (References a) => a -> Ident
+ensureSingleRef :: (MonadThrow m, References a) => a -> m Ident
 ensureSingleRef r = go $ refOf r
   where
-    go (i N.:| []) = i
+    go (i N.:| []) = pure i
     go _           = bad "Compound names should not occur at this point"
 
 -- reduceRange :: (MonadRepr s m) => Range -> m (Integer, Integer)
@@ -702,12 +702,10 @@ mkInstDecl :: (MonadRepr s m) => SymTab -> Instance -> m SymTab
 mkInstDecl m i@Instance {..} =
   let name = mkAnonName instName elName
       isAnon = isNothing instName
-  in ensureUndef name m $
-     return $
-     M.insert
-       (toString name)
-       (InstDef name i (ensureSingleRef elName) [] isAnon Void)
-       m
+  in do ref' <- ensureSingleRef elName
+        ensureUndef name m $
+          return $
+          M.insert (toString name) (InstDef name i ref' [] isAnon Void) m
 
 mkBusDecl :: (MonadRepr s m) => SymTab -> Ident -> Bus -> m SymTab
 mkBusDecl m ctx b@Bus {..} = do
@@ -985,14 +983,12 @@ buildEnv df = do
 
 -- | Do typechecking of an environment. Return DesignFile with completed type
 -- annoations
---typeCheck :: (MonadIO m) => DesignFile -> m DesignFile
--- typeCheck :: DesignFile -> DesignFile
-typeCheck :: DesignFile -> Config -> IO (Env, Warns)
+typeCheck :: (MonadIO m, MonadThrow m) => DesignFile -> Config -> m (Env, Warns)
 typeCheck df conf = do
-  let (res, env) =
-        runReprMidentity
+  let res =
+        runReprM
           (mkEnv conf Void)
           (runWriterT $ runReaderT (unTyM (buildEnv df)) mkContext)
   case res of
-    Left e       -> throwIO e
-    Right (_, l) -> return (env, l)
+    Left e            -> throw e
+    Right ((_, w), r) -> return (r, w)

@@ -21,10 +21,9 @@ module SME.Simulate
   , initSimEnv
   ) where
 
-import           Control.Exception                 (throw)
 import           Control.Monad                     (foldM, forM, forM_, mapM_,
-                                                    replicateM, replicateM_,
-                                                    unless, when, zipWithM)
+                                                    replicateM_, unless, when,
+                                                    zipWithM)
 import           Control.Monad.Reader              (MonadReader, ReaderT, asks,
                                                     local, runReaderT)
 import           Data.Bits                         (complement, shiftL, shiftR,
@@ -39,7 +38,6 @@ import qualified Data.List.NonEmpty                as N
 import           Data.Maybe                        (catMaybes, fromMaybe,
                                                     mapMaybe)
 
-import           Control.Monad.Except              (MonadError)
 import           Control.Monad.Extra               (concatForM, concatMapM,
                                                     mapMaybeM, unlessM, whenM)
 import           Control.Monad.IO.Class            (MonadIO, liftIO)
@@ -87,8 +85,8 @@ newtype SimM a = SimM
              , Monad
              , MonadReader Context
              , MonadState SimEnv
-             , MonadError TypeCheckErrors
              , MonadIO
+             , MonadThrow
              )
 
 instance (MonadRepr SimExt) SimM where
@@ -1211,11 +1209,11 @@ runSimulation procs buses = do
 
 --setupIncrSimulation :: Env ->
 
-initSimEnv :: Env -> SmeCtxPtr -> IO (Either TypeCheckErrors SimEnv)
+initSimEnv :: Env -> SmeCtxPtr -> IO SimEnv
 initSimEnv env ptr = runStep (toSimEnv env) $  setupSimEnv (Just ptr)
 
-newSteppingSim :: Env -> SmeCtxPtr -> IO (Either TypeCheckErrors SimEnv)
-newSteppingSim env ptr =
+newSteppingSim :: SmeCtxPtr -> Env -> IO SimEnv
+newSteppingSim ptr env =
   runStep (toSimEnv env) $ do
     setupSimEnv (Just ptr)
     csv <-
@@ -1229,15 +1227,12 @@ newSteppingSim env ptr =
     writeCsvHeader
 
 
-runStep :: SimEnv -> SimM () -> IO (Either TypeCheckErrors SimEnv)
-runStep env act = do
-  (res, env') <- runReprM env (runReaderT (unSimM act) mkContext)
-  return $
-    case res of
-      Right () -> Right env'
-      Left l   -> Left l
+--runStep :: SimEnv -> SimM () -> IO (Either SomeException SimEnv)
+runStep :: SimEnv -> SimM () -> IO SimEnv
+runStep env act =
+  execReprM env (runReaderT (unSimM act) mkContext)
 
-procStep :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
+procStep :: SimEnv -> IO SimEnv
 procStep env =
   let act = mapM_ (modifyIORefM runProcess) =<< gets (simProcs . envExt)
   in runStep env act
@@ -1260,7 +1255,7 @@ writeCsvHeader = do
     Just a -> liftIO $ writeCsvLine a heads
     Nothing -> return ()
 
-busStep :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
+busStep :: SimEnv -> IO SimEnv
 busStep env =
   runStep env $ do
     res <- concatMapM propagateBus =<< gets (simBuses . envExt)
@@ -1268,7 +1263,7 @@ busStep env =
       Just a -> liftIO $ writeCsvLine a res
       Nothing -> return ()
 
-finalizeSim :: SimEnv -> IO (Either TypeCheckErrors SimEnv)
+finalizeSim :: SimEnv -> IO SimEnv
 finalizeSim env =
   runStep env $ do
     applyTypes
@@ -1279,26 +1274,21 @@ finalizeSim env =
 toSimEnv :: Env -> SimEnv
 toSimEnv = (<$) EmptyExt
 
-runSimM :: Env -> SimM a -> IO (Either TypeCheckErrors a, SimEnv)
-runSimM env act = runReprM (toSimEnv env) (runReaderT (unSimM act) mkContext)
+runSimM :: Env -> SimM a -> IO SimEnv
+runSimM env act = execReprM (toSimEnv env) (runReaderT (unSimM act) mkContext)
 
 
-simulate :: Int -> Env -> IO (Either TypeCheckErrors SimEnv)
-simulate its e = do
-  (res, env) <-
-    runSimM e $ do
-      setupSimEnv Nothing
-      procs <- gets (simProcs . envExt)
-      buses <- gets (simBuses . envExt)
-      replicateM_ its (runSimulation procs buses)
-      applyTypes
-      gets (csvWriter . envExt) >>= \case
-        Just a -> liftIO $ finalizeCsv a
-        Nothing -> return ()
-  return $
-    case res of
-      Right () -> Right env
-      Left l   -> Left l
+simulate :: Int -> Env -> IO SimEnv
+simulate its e =
+  runSimM e $ do
+    setupSimEnv Nothing
+    procs <- gets (simProcs . envExt)
+    buses <- gets (simBuses . envExt)
+    replicateM_ its (runSimulation procs buses)
+    applyTypes
+    gets (csvWriter . envExt) >>= \case
+      Just a -> liftIO $ finalizeCsv a
+      Nothing -> return ()
 
 -- | Extract the maximum observed bus and variable values and use them to set
 -- updated types for in the program

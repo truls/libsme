@@ -17,15 +17,13 @@ module SME.CodeGen.Common
   , fileName
   ) where
 
-import           Control.Monad.Except   (MonadError)
-import           Control.Monad.Identity (Identity)
-import           Control.Monad.Reader   (MonadReader, ReaderT, ask, local,
-                                         runReaderT)
-import           Control.Monad.State    (MonadState)
-import qualified Data.Text              as T
-import           System.FilePath        ((<.>))
+import           Control.Monad.Reader  (MonadReader, ReaderT, ask, local,
+                                        runReaderT)
+import           Control.Monad.State   (MonadState)
+import qualified Data.Text             as T
+import           System.FilePath       ((<.>))
 
-import           Language.SMEIL.Syntax  (Typed (..), Typeness (..))
+import           Language.SMEIL.Syntax (Typed (..), Typeness (..))
 import           SME.Error
 import           SME.Representation
 
@@ -58,22 +56,21 @@ getType :: GenM Typeness
 getType = unTyCtx <$> ask
 
 newtype GenM a = GenM
-  { unGenM :: ReaderT TypeContext (ReprM Identity Void) a
+  { unGenM :: ReaderT TypeContext (ReprM (Either SomeException) Void) a
   } deriving ( Functor
              , Applicative
              , Monad
              , MonadState Env
-             , MonadError TypeCheckErrors
              , MonadReader TypeContext
+             , MonadThrow
              )
 
 instance (MonadRepr Void) GenM
 
-runGenM :: Env -> GenM a -> (Either TypeCheckErrors a, Env)
+runGenM :: Env -> GenM a -> Either SomeException (a, Env)
 runGenM env act =
-  runReprMidentity env $ runReaderT (unGenM act) (TypeContext Untyped)
+  runReprM env $ runReaderT (unGenM act) (TypeContext Untyped)
 
-execGenM :: Env -> GenM a -> Env
+execGenM :: Env -> GenM a -> Either SomeException Env
 execGenM env act =
-  let (_, res) = runGenM env act
-  in res
+  runGenM env act >>= pure . snd

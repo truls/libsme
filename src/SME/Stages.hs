@@ -1,27 +1,44 @@
-{-# LANGUAGE LambdaCase          #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE ScopedTypeVariables        #-}
 
 -- | Stage manager module. Manages the compilation process and
 
 module SME.Stages
   ( Stages(..)
   , Config(..)
+  , CompilerM
+  , CompilerState(..)
+  , mkCompilerState
+  , runCompilerM
   , compile
   , mkConfig
   , cmdLineOptParser
   , libOptParser
   , printWarnings
+  , exitOnError
+  , doImports
+  , doTypeCheck
+  , doReconstruct
+  , doOutput
+  , handleErrors
   ) where
 
-import           Control.Exception     (throw, tryJust)
-import           Control.Monad         (mapM_, unless, when)
-import           Data.List             (intercalate, nub)
-import           Data.Maybe            (fromJust, isJust)
-import qualified Data.Text.IO          as TIO
+import           Control.Exception.Safe (Handler (..), IOException,
+                                         SomeException (..), catches, try)
+import           Control.Monad          (mapM_)
+import           Control.Monad.Extra
+import           Control.Monad.Reader
+import           Control.Monad.State
+import qualified Data.HashMap.Strict    as M
+import           Data.List              (intercalate, nub)
+import qualified Data.Text.IO           as TIO
 import           Options.Applicative
-import           Text.Show.Pretty      (ppShow)
+import           System.Exit            (exitFailure)
+import           System.IO              (hPrint, stderr)
 
 import           Language.SMEIL.Pretty
+import           Language.SMEIL.Syntax  (DesignFile)
 import           SME.CodeGen
 import           SME.Error
 import           SME.ImportResolver
@@ -30,9 +47,6 @@ import           SME.Representation
 import           SME.Simulate
 import           SME.TypeCheck
 import           SME.Warning
-
-printWarnings :: Warns -> IO ()
-printWarnings = mapM_ print
 
 cmdLineOptParser :: Parser Config
 cmdLineOptParser =
@@ -100,44 +114,108 @@ optParser p =
       intercalate ", " (map show [ResolveImport, TypeCheck, CodeGen]) ++
       " or " ++ show Retyped
 
-dumpStage :: Config -> Stages -> Bool
-dumpStage c s = s `elem` dumpStages c
+newtype CompilerM a = CompilerM
+  { unCompilerM :: ReaderT Config (StateT CompilerState IO) a
+  } deriving ( Monad
+             , Applicative
+             , Functor
+             , MonadState CompilerState
+             , MonadReader Config
+             , MonadIO
+             , MonadThrow
+             , MonadCatch
+             )
+
+runCompilerM :: Config -> CompilerState -> CompilerM a -> IO (a, CompilerState)
+runCompilerM c s f = runStateT (runReaderT (unCompilerM f) c) s
+
+data CompilerState = CompilerState
+  { nameMap  :: NameMap
+  , warnings :: Maybe Warns
+  }
+
+mkCompilerState :: CompilerState
+mkCompilerState = CompilerState {nameMap = M.empty, warnings = Nothing}
+
+doImports :: FilePath -> CompilerM DesignFile
+doImports fp = do
+  (df, nameMap') <- resolveImports fp
+  modify (\x -> x { nameMap = nameMap' })
+  return df
+
+doTypeCheck :: DesignFile -> CompilerM (BaseEnv Void)
+doTypeCheck df = do
+  (tyEnv, warns) <- typeCheck df =<< ask
+  modify (\x -> x { warnings = Just warns })
+  return tyEnv
+
+-- fromSimEnv :: SimEnv -> CompilerM (BaseEnv Void)
+-- fromSimEnv = pure . (<$) Void
+
+doSimulate :: BaseEnv Void -> CompilerM (BaseEnv Void)
+doSimulate e =
+  asks runSim >>= \case
+      Just its ->
+        liftIO $ (Void <$) <$> simulate its e
+      Nothing -> return e
+
+doReconstruct :: BaseEnv Void -> CompilerM DesignFile
+doReconstruct = pure . reconstruct
+
+doOutput :: BaseEnv Void -> CompilerM ()
+doOutput e = asks outputDir >>= \case
+  Just d ->
+    liftIO $ genOutput d VHDL e
+  Nothing -> return ()
+
+dumpStage :: (Pretty a) => Stages -> a -> CompilerM a
+dumpStage st v = do
+  whenM ((st `elem`) <$> asks dumpStages) (liftIO $ TIO.putStrLn $ pprr v)
+  return v
+
+pipeline :: FilePath -> CompilerM ()
+pipeline =
+  doImports >=>
+  dumpStage ResolveImport >=>
+  doTypeCheck >=>
+  dumpStage TypeCheck >=>
+  doSimulate >=>
+  doReconstruct >=>
+  dumpStage Retyped >=>
+  doTypeCheck >=>
+  doOutput
+
+doCompile :: FilePath -> CompilerM ()
+doCompile fp = handleErrors $ pipeline fp >> printWarnings
+
+printWarnings :: CompilerM ()
+printWarnings =
+  unlessM (asks noWarnings) $ mapM_ (liftIO . print) =<< gets warnings
+
+handleErrors :: CompilerM a -> CompilerM a
+handleErrors act = do
+  nm <- gets nameMap
+  let hs =
+        [ Handler
+            (\(e :: TypeCheckErrors) ->
+               throw $ BaseCompilerException $ renderError nm e)
+        , Handler
+            (\(e :: SomeCompilerException) ->
+               throw $ BaseCompilerException $ show e)
+        , Handler
+            (\(e :: IOException) ->
+               throw $
+               BaseCompilerException ("Uncaught IO Exception: " ++ show e))
+        ]
+  catches act hs
+
+exitOnError :: IO a -> IO a
+exitOnError act =
+  try act >>= \case
+    Left (e :: SomeException) -> do
+      hPrint stderr  e
+      exitFailure
+    Right r -> return r
 
 compile :: Config -> IO ()
-compile conf = do
-  (df, nameMap) <- resolveImports (inputFile conf)
-  when (dumpStage conf ResolveImport) $ TIO.putStrLn $ pprr df
-  res <-
-    tryJust
-      (\(e :: TypeCheckErrors) -> Just (renderError nameMap e))
-      (typeCheck df conf)
-  tyEnv <-
-    case res of
-      Left e  -> throw $ CompilerError e
-      Right (r, w) -> do
-        unless (noWarnings conf) (printWarnings w)
-        pure r
-  when (dumpStage conf TypeCheck) (putStrLn $ ppShow tyEnv)
-  genIn <-
-    case runSim conf of
-      Just its ->
-        simulate its tyEnv >>= \case
-          Left e -> do
-            putStrLn $ renderError nameMap e
-            throw e
-          Right r -> return (Void <$ r)
-      Nothing -> return tyEnv
-  let recon = reconstruct genIn
-  when (dumpStage conf Retyped) (TIO.putStrLn $ pprr recon)
-  res' <-
-    tryJust
-      (\(e :: TypeCheckErrors) -> Just (renderError nameMap e))
-      (typeCheck recon conf)
-  tyEnv' <-
-    case res' of
-      Left e  -> throw $ CompilerError e
-      Right (r, w) -> do
-        unless (noWarnings conf) (printWarnings w)
-        pure r
-  when (isJust (outputDir conf)) $
-    genOutput (fromJust (outputDir conf)) VHDL tyEnv'
+compile c = fst <$> runCompilerM c mkCompilerState (doCompile (inputFile c))

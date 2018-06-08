@@ -31,7 +31,8 @@ module SME.Representation
   , ensureUndef
   , mkEnv
   , runReprM
-  , runReprMidentity
+  , execReprM
+  --, runReprMidentity
   , unReprM
   , isBus
   , mkVarDef
@@ -54,13 +55,12 @@ module SME.Representation
   , vmaximum
   , vminimum
   , exprReduceToLiteral
+
+  -- Reexports
+  , MonadIO
   ) where
 
-import           Control.Exception               (throw)
 import           Control.Monad                   (void, when)
-import           Control.Monad.Except            (ExceptT, MonadError,
-                                                  runExceptT)
-import           Control.Monad.Identity          (Identity, runIdentity)
 import           Control.Monad.IO.Class
 import           Control.Monad.State.Strict      (MonadState, StateT, gets,
                                                   modify, runStateT)
@@ -80,6 +80,7 @@ import           Data.Vector                     (Vector)
 import qualified Data.Vector                     as V
 import           Text.PrettyPrint.Mainland       (text)
 import           Text.PrettyPrint.Mainland.Class (Pretty (ppr))
+import           Text.Show.Pretty                (ppShow)
 
 
 import           Language.SMEIL.Syntax
@@ -95,28 +96,40 @@ traceMS :: (Applicative f) => String -> f ()
 traceMS _ = pure ()
 
 newtype ReprM m s a = ReprM
-  { unReprM :: ExceptT TypeCheckErrors (StateT (BaseEnv s) m) a
+  { unReprM :: StateT (BaseEnv s) m a
   } deriving ( Functor
              , Applicative
              , Monad
              , MonadState (BaseEnv s)
-             , MonadError TypeCheckErrors
+             --, MonadError TypeCheckErrors
+             , MonadThrow
              , MonadIO
              )
 
 
 -- TODO: Figure out something nicer instead of these functions
-runReprMidentity ::
-     BaseEnv s -> ReprM Identity s a -> (Either TypeCheckErrors a, BaseEnv s)
-runReprMidentity e f = runIdentity $ runStateT (runExceptT $ unReprM f) e
+-- runReprMidentity ::
+--      BaseEnv s -> ReprM Identity s a -> (Either TypeCheckErrors a, BaseEnv s)
+-- runReprMidentity e f = runIdentity $ runStateT (runExceptT $ unReprM f) e
 
-runReprM :: BaseEnv s -> ReprM m s a -> m (Either TypeCheckErrors a, BaseEnv s)
-runReprM e f = runStateT (runExceptT $ unReprM f) e
+-- runReprM :: BaseEnv s -> ReprM m s a -> m (Either TypeCheckErrors a, BaseEnv s)
+-- runReprM e f = runStateT (runExceptT $ unReprM f) e
+
+-- runReprMidentity ::
+--      BaseEnv s -> ReprM Identity s a -> (Either TypeCheckErrors a, BaseEnv s)
+-- runReprMidentity e f = runIdentity $ runStateT (runExceptT $ unReprM f) e
+
+runReprM :: BaseEnv s -> ReprM m s a -> m ((a, BaseEnv s))
+runReprM e f = runStateT (unReprM f) e
+
+execReprM :: (Functor m) => BaseEnv s -> ReprM m s a -> m (BaseEnv s)
+execReprM e f = snd <$> runReprM e f
 
 -- | Type checking monad
 class ( Monad m
+      , MonadThrow m
       , MonadState (BaseEnv s) m
-      , MonadError TypeCheckErrors m
+      --, MonadError TypeCheckErrors m
       , Extension s
       ) =>
       MonadRepr s m
@@ -169,9 +182,7 @@ class ( Monad m
               ParamDef {paramType = BusPar {..}} ->
                 traceS "GOt back ParamDef" $
                 case ref of
-                  (_ :| []) ->
-                    throw $
-                    InternalCompilerError "Bus reference is a single name"
+                  (_ :| [])   -> bad "Bus reference is a single name"
                   (r' :| rs') -> withScope r' (go (N.fromList (rs' ++ is)))
               _
               -- If first name component doesn't resolve to a possible compound
@@ -393,7 +404,7 @@ lookupEx e m = case M.lookup (toString e) m of
 -- | Tries to look up an element 'i' in map 'm'. Performs action 'a' if
 -- successful and throws an error otherwise
 ensureUndef ::
-     (Nameable d, ToString a, Located a)
+     (MonadThrow m, Nameable d, ToString a, Located a)
   => a
   -> M.HashMap String d
   -> m b
@@ -800,6 +811,9 @@ data BaseEnv a = BaseEnv
   , config  :: Config
   , ext     :: a
   } deriving (Show)
+
+instance (Show a) => Pretty (BaseEnv a) where
+  ppr = text . ppShow
 
 mkEnv :: Config -> a -> BaseEnv a
 mkEnv = BaseEnv M.empty (Ident "__noEnv__" noLoc) S.empty Nothing
