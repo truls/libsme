@@ -24,9 +24,7 @@ addons:
   apt:
     packages:
       - libgmp-dev
-      - gnat
       - git
-      - parallel
 
 before_install:
 # Download and unpack the stack executable
@@ -36,6 +34,7 @@ before_install:
 
 install:
 # Build dependencies
+- stack install c2hs
 - stack --install-ghc test --only-dependencies
 #--ghc-options=-O0
 #- travis_wait stack --no-terminal --install-ghc test --only-dependencies --ghc-options=-O0
