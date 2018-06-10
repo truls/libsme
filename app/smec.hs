@@ -1,12 +1,10 @@
 module Main where
 
-import           Control.Exception   (catch, throwIO)
-import           Control.Monad       (unless, when)
+import           Control.Exception.Safe (throw)
+import           Control.Monad          (unless, when)
 import           Options.Applicative
-import           System.Directory    (createDirectory, doesDirectoryExist,
-                                      doesFileExist)
-import           System.Exit         (exitFailure)
-import           System.IO           (hPutStrLn, stderr)
+import           System.Directory       (createDirectory, doesDirectoryExist,
+                                         doesFileExist)
 
 import           SME.Error
 import           SME.Stages
@@ -22,14 +20,11 @@ main :: IO ()
 main = do
   opts <- execParser optsParser
   doesFileExist (inputFile opts) >>=
-    flip unless (throwIO $ FileNotFound $ inputFile opts)
+    flip unless (throw $ FileNotFound $ inputFile opts)
   case outputDir opts of
     Just d -> do
       exists <- doesDirectoryExist d
-      when (exists && not (force opts)) (throwIO (DirAlreadyExists d))
+      when (exists && not (force opts)) (throw (DirAlreadyExists d))
       unless exists $ createDirectory d
     Nothing -> return ()
-  compile opts `catch`
-    (\(CompilerError e) -> do
-       hPutStrLn stderr e
-       exitFailure)
+  exitOnError $ compile opts
