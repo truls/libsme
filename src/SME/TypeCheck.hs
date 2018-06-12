@@ -101,13 +101,6 @@ withInLoop = local (\x -> x { inLoop = True })
 isInLoop :: TyM Bool
 isInLoop = asks inLoop
 
-lookupBus :: (References a, MonadRepr Void m) => a -> m DefType
-lookupBus r =
-  let ref = trace ("lookupBus called with " ++ show (refOf r)) (refOf r)
-  in lookupDef r >>= \case
-       b@BusDef {} -> pure b
-       _ -> throw $ ExpectedBus (N.head ref)
-
 -- hasArrayAccess :: Name -> Bool
 -- hasArrayAccess Name {..} =
 --   flip any (N.toList parts) isArray
@@ -725,7 +718,7 @@ buildProcTab p@Process {name = n, decls = d, body = body} = do
 buildNetTab :: (MonadRepr s m) => Network -> m TopDef
 buildNetTab net@Network {name = n, netDecls = d} = do
   tab <- foldM go M.empty d
-  return $ NetworkTable tab n [] net False Void
+  return $ NetworkTable tab M.empty n [] net False Void
   where
     go m (NetConst c@Constant {..}) =
       ensureUndef name m $

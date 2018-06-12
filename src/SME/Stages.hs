@@ -22,6 +22,7 @@ module SME.Stages
   , doReconstruct
   , doOutput
   , handleErrors
+  , doTransform
   ) where
 
 import           Control.Exception.Safe (Handler (..), IOException,
@@ -45,6 +46,7 @@ import           SME.ImportResolver
 import           SME.Reconstruct
 import           SME.Representation
 import           SME.Simulate
+import           SME.Transform
 import           SME.TypeCheck
 import           SME.Warning
 
@@ -149,6 +151,9 @@ doTypeCheck df = do
   modify (\x -> x { warnings = Just warns })
   return tyEnv
 
+doTransform :: BaseEnv Void -> CompilerM (BaseEnv Void)
+doTransform = liftIO . transform
+
 -- fromSimEnv :: SimEnv -> CompilerM (BaseEnv Void)
 -- fromSimEnv = pure . (<$) Void
 
@@ -179,6 +184,8 @@ pipeline =
   dumpStage ResolveImport >=>
   doTypeCheck >=>
   dumpStage TypeCheck >=>
+  doTransform >=>
+  dumpStage Transform >=>
   doSimulate >=>
   doReconstruct >=>
   dumpStage Retyped >=>

@@ -1,0 +1,10 @@
+proc test()
+    var a: i10;
+    var b: i5;
+{
+   a = b / 1023;
+}
+
+network N () {
+    instance _ of test ();
+}

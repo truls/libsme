@@ -46,13 +46,19 @@ module Language.SMEIL.Syntax
   , Ref
   , bitSize
   , isUnsized
+
+  -- Reexports
+  , Located(..)
+  , SrcLoc
+  , fromLoc
+  , noLoc
   ) where
 
 import           Data.Data                       (Data, Typeable)
 import           Data.Hashable                   (Hashable (hashWithSalt))
 import qualified Data.List.NonEmpty              as N
 import           Data.Loc                        (Located (locOf), SrcLoc,
-                                                  noLoc)
+                                                  fromLoc, noLoc)
 import           Data.Maybe                      (fromMaybe)
 import qualified Data.Text                       as T
 import           Text.PrettyPrint.Mainland       (cat, dot, punctuate)
@@ -189,7 +195,7 @@ data NetworkDecl
   | NetBus { bus :: Bus
            -- ^ loc network declaration
             }
-  | NetConst { const :: Constant
+  | NetConst { constant :: Constant
              -- ^ loc network constant
               }
   | NetGen { gen :: Generate

@@ -1,0 +1,47 @@
+proc Id()
+    bus idbus {
+        val: i32 = 0;
+    };
+{
+    idbus.val = Addone.addonebus.val;
+}
+
+proc Addone()
+
+    bus addonebus {
+        val: i32 = 0;
+    };
+{
+    addonebus.val = Id.idbus.val + 1;
+    trace("Wrote value {}", Id.idbus.val + 1);
+}
+
+network plusone_net() {
+    instance _ of Id();
+    instance _ of Addone();
+}
+
+
+// Param decl
+// proc Id(in Addone_addonebus)
+//     bus idbus {
+//         val: i32;
+//     };
+// {
+//     idbus.val = Addone_addonebus.val;
+// }
+
+// proc Addone(in _Id_idbus)
+
+//     bus addonebus {
+//         val: i32;
+//     };
+// {
+//     addonebus.val = Id_idbus.val + 1;
+//     trace("Wrote value {}", Id.idbus.val + 1);
+// }
+
+// network plusone_net() {
+//     instance _ of Id(__anonymous_Addone.addonebus);
+//     instance _ of Addone(__anonymous_Id.id);
+// }

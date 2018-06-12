@@ -55,9 +55,11 @@ module SME.Representation
   , vmaximum
   , vminimum
   , exprReduceToLiteral
+  , lookupBus
 
   -- Reexports
   , MonadIO
+  , NonEmpty (..)
   ) where
 
 import           Control.Monad                   (void, when)
@@ -105,7 +107,6 @@ newtype ReprM m s a = ReprM
              , MonadThrow
              , MonadIO
              )
-
 
 -- TODO: Figure out something nicer instead of these functions
 -- runReprMidentity ::
@@ -400,6 +401,13 @@ lookupEx ::
 lookupEx e m = case M.lookup (toString e) m of
   Just r  -> pure r
   Nothing -> traceS "lookupEx" $ throw $ UndefinedName e
+
+lookupBus :: (References a, MonadRepr s m) => a -> m (BaseDefType s)
+lookupBus r =
+  let ref = refOf r
+  in lookupDef r >>= \case
+       b@BusDef {} -> pure b
+       _ -> throw $ ExpectedBus (N.head ref)
 
 -- | Tries to look up an element 'i' in map 'm'. Performs action 'a' if
 -- successful and throws an error otherwise
@@ -775,12 +783,13 @@ data BaseTopDef a
                  --, referencedProcs ::
                  , procDef   :: Process
                  , ext       :: a }
-  | NetworkTable { symTable :: BaseSymTab a
-                 , netName  :: Ident
-                 , params   :: ParamList
-                 , netDef   :: Network
-                 , topLevel :: Bool
-                 , ext      :: a }
+  | NetworkTable { symTable  :: BaseSymTab a
+                 , usedBuses :: UsedBuses
+                 , netName   :: Ident
+                 , params    :: ParamList
+                 , netDef    :: Network
+                 , topLevel  :: Bool
+                 , ext       :: a }
   deriving (Show, Data)
 
 instance Functor BaseTopDef where
@@ -824,6 +833,7 @@ data Stages
   | TypeCheck
   | CodeGen
   | Retyped
+  | Transform
   deriving (Eq, Show)
 
 instance Read Stages where
@@ -839,6 +849,7 @@ instance Read Stages where
                   --, ("optimize", Optimize)
                   , ("code-generation", CodeGen)
                   , ("typed", Retyped)
+                  , ("transform", Transform)
                   ]) .
         map toLower
 

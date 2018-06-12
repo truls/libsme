@@ -1,0 +1,20 @@
+proc id(in inbus, out outbus) {
+    outbus.val = inbus.val;
+}
+
+proc plusone(in inbus, out outbus) {
+    outbus.val = inbus.val + 1;
+    trace("Wrote value {}", inbus.val + 1);
+
+}
+
+network plusone_net() {
+    bus idout {
+        val : i32;
+    };
+    bus plusoneout {
+        val : i32;
+    };
+    instance _ of id(plusoneout, idout);
+    instance _ of plusone(idout, plusoneout);
+}

@@ -1,0 +1,10 @@
+proc test ()
+    const a: i100 = 0;
+    var b: bool = 0;
+{
+    b = a;
+}
+
+network i () {
+    instance _ of test ();
+}
