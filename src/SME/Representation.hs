@@ -486,7 +486,7 @@ instance Pretty Value where
   ppr (BoolVal b)    = ppr b
   ppr (DoubleVal d)  = ppr d
   ppr (SingleVal s)  = ppr s
-  ppr UndefVal       = text "U"
+  ppr UndefVal       = text "'U"
 
 valueToLit :: Value -> Literal
 valueToLit (IntVal i)      = LitInt i noLoc
