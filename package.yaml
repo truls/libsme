@@ -47,6 +47,7 @@ dependencies:
 
 library:
   source-dirs: src
+  build-tools: c2hs
   dependencies:
   - language-vhdl-quote
   - containers >= 0.5.10.2
