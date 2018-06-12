@@ -34,12 +34,8 @@ before_install:
 
 install:
 # Build dependencies
-#- stack install c2hs
-- stack --install-ghc test --only-dependencies
-#--ghc-options=-O0
-#- travis_wait stack --no-terminal --install-ghc test --only-dependencies --ghc-options=-O0
+- stack --install-ghc test --only-dependencies --no-terminal
 
 script:
 # Build the package, its tests, and its docs and run the tests
 - stack test
-#--ghc-options=-O0
