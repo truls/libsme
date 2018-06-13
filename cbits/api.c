@@ -367,6 +367,7 @@ sme_propagate(SmeCtx* ctx)
         memcpy(rv->num, wv->num, wv->len);
         rv->len = wv->len;
         rv->negative = wv->negative;
+        chan->read.undef = chan->write.undef;
         break;
       }
       default:
@@ -374,6 +375,7 @@ sme_propagate(SmeCtx* ctx)
         //chan->read.value.native_int = chan->write.value.native_int;
         chan->write = (Value) {
           .type = chan->write.type,
+          .undef = chan->read.undef,
           .value = { 0 }
         }; //(Value) { 0 };
         /* chan->write.value.native_int = 0; */
