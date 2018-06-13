@@ -197,6 +197,7 @@ class ( Monad m
   -- | Is name a top-level definition
   isTopDef :: (References a) => a -> m Bool
   isTopDef i = M.member (toString (N.head (refOf i))) <$> gets defs
+  {-# INLINEABLE isTopDef #-}
 
   -- | Looks up a top-level definition
   lookupTopDef :: (References a, Located a, Pretty a) => a -> m (BaseTopDef s)
@@ -213,6 +214,7 @@ class ( Monad m
         -- the use of such a name at this point means that the name refers to a
         -- non-existing entity
        = traceS "lookupTopDef" $ throw $ UndefinedName i
+  {-# INLINEABLE lookupTopDef #-}
 
   -- | Updates a top-level definition 'i', by applying a function 'f' to its
   -- top-level definition.
@@ -240,6 +242,7 @@ class ( Monad m
         defs = M.elems tab
     res <- mapM f defs
     updateTopDef d (\x -> x {symTable = M.fromList (zip ks res)})
+  {-# INLINEABLE updateDefsM_ #-}
 
   -- | Given a global reference, applies the function to update the definition.
   updateDefM ::
@@ -258,6 +261,7 @@ class ( Monad m
     updateTopDef
       top
       (\x -> x {symTable = M.insert (toString name) res (symTable x)})
+  {-# INLINEABLE updateDefM #-}
 
   mapDefsM ::
        (References a, Located a, Pretty a)
@@ -337,6 +341,7 @@ class ( Monad m
     M.lookup r . usedBuses <$> getCurEnv >>= \case
       Just s -> pure $ Just $ S.toList s
       Nothing -> pure Nothing
+  {-# INLINABLE getBusState #-}
 
   withScope :: (References a, Pretty a, Located a) => a -> m b -> m b
   withScope s act = do
@@ -344,12 +349,14 @@ class ( Monad m
     new <- lookupTopDef s
     modify (\x -> x {curEnv = nameOf new})
     act <* modify (\x -> x {curEnv = cur})
+  {-# INLINABLE withScope #-}
 
   getCurEnv :: (MonadRepr a m) => m (BaseTopDef a)
   getCurEnv = do
     e <- gets curEnv
     traceMS ("getCurEnv " ++ show e)
     lookupTopDef e
+  {-# INLINABLE getCurEnv #-}
 
   updateCurEnv :: (MonadRepr a m) => (BaseTopDef a -> BaseTopDef a) -> m ()
   updateCurEnv f = do
@@ -401,6 +408,7 @@ lookupEx ::
 lookupEx e m = case M.lookup (toString e) m of
   Just r  -> pure r
   Nothing -> traceS "lookupEx" $ throw $ UndefinedName e
+{-# INLINABLE lookupEx #-}
 
 lookupBus :: (References a, MonadRepr s m) => a -> m (BaseDefType s)
 lookupBus r =
@@ -504,21 +512,25 @@ absValue (IntVal v)    = IntVal $ abs v
 absValue (DoubleVal v) = DoubleVal $ abs v
 absValue (SingleVal v) = SingleVal $ abs v
 absValue v             = v
+{-# INLINE absValue #-}
 
 vlt :: Value -> Value -> Bool
 vlt UndefVal _ = True
 vlt _ UndefVal = True
 vlt v1 v2      = v1 < v2
+{-# INLINE vlt #-}
 
 vleq :: Value -> Value -> Bool
 vleq UndefVal _ = True
 vleq _ UndefVal = True
 vleq v1 v2      = v1 <= v2
+{-# INLINE vleq #-}
 
 vgt :: Value -> Value -> Bool
 vgt UndefVal _ = True
 vgt _ UndefVal = True
 vgt v1 v2      = v1 > v2
+{-# INLINE vgt #-}
 
 vcmp :: (Value -> Value -> Value) -> Value -> Value -> Value
 vcmp f v1 v2
@@ -526,18 +538,23 @@ vcmp f v1 v2
   | v1 == UndefVal && v2 /= UndefVal = v2
   | v1 /= UndefVal && v2 == UndefVal = v1
   | otherwise = f v1 v2
+{-# INLINE vcmp #-}
 
 vmin :: Value -> Value -> Value
 vmin = vcmp min
+{-# INLINE vmin #-}
 
 vmax :: Value -> Value -> Value
 vmax = vcmp max
+{-# INLINE vmax #-}
 
 vmaximum :: (Foldable t) => t Value -> Value
 vmaximum = foldr1 vmax
+{-# INLINE vmaximum #-}
 
 vminimum :: (Foldable t) => t Value -> Value
 vminimum = foldr1 vmin
+{-# INLINE vminimum #-}
 
 -- | Truncates integer values to their bit length with accurate overflow
 -- emulation
@@ -714,7 +731,7 @@ lookupTy r = do
       case lookup rest (unBusShape busShape) of
         Just a  -> pure a
         Nothing -> traceS "lookupBusShape" $ throw $ UndefinedName r
-
+{-# INLINABLE lookupTy #-}
 
 -- TODO: Maybe change this to a map
 newtype BusShape = BusShape
