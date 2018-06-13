@@ -15,13 +15,15 @@ displayLoc' :: (Located a) => a -> String
 displayLoc' = displayLoc . locOf
 
 mkRange :: Maybe (Literal, Literal) -> Maybe Range
-mkRange =
-  fmap
-    (\(l, u) ->
-       Range
-         (PrimLit (typeOf l) l noLoc)
-         (PrimLit (typeOf u) u noLoc)
-         noLoc)
+mkRange (Just (l, u)) =
+  if isUnsized l || isUnsized u
+    then Nothing
+    else Just
+           (Range
+              (PrimLit (typeOf l) l noLoc)
+              (PrimLit (typeOf u) u noLoc)
+              noLoc)
+mkRange Nothing = Nothing
 
 -- FIXME: Consider a type class for this
 identToName :: Ident -> Name
