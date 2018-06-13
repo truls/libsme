@@ -408,8 +408,8 @@ checkStm :: Statement -> TyM Statement
 checkStm Assign {..} = do
   destTy <- trackUsage Store dest lookupName
   -- TODO: Clean up these double withTypectx
-  (_t, val') <- withTypeCtx destTy $ checkExpr val
-  --_ <- withTypeCtx destTy $ unifyTypes Nothing destTy t
+  (t, val') <- withTypeCtx destTy $ checkExpr val
+  _ <- withTypeCtx destTy $ unifyTypes Nothing destTy t
   return $ Assign dest val' loc
 checkStm If {..} = do
   (condTy, cond') <- checkExpr cond
