@@ -568,12 +568,18 @@ instance Eq Type where
   _ == _ = False
 
 isUnsized :: (Typed a) => a -> Bool
-isUnsized ty = case typeOf ty of
-  (Typed (Signed Nothing _))   -> True
-  (Typed (Unsigned Nothing _)) -> True
-  (Typed Array {..})           -> isUnsized innerTy
-  (Typed _)                    -> False
-  Untyped                      -> True
+isUnsized ty =
+  case typeOf ty of
+    (Typed (Signed Nothing _))    -> True
+    (Typed (Unsigned Nothing _))  -> True
+    (Typed (Signed (Just _) _))   -> False
+    (Typed (Unsigned (Just _) _)) -> False
+    (Typed Array {..})            -> isUnsized innerTy
+    (Typed (Bool _))              -> True
+    (Typed (Single _))            -> True
+    (Typed (Double _))            -> True
+    (Typed (String _))            -> True
+    Untyped                       -> True
 
 instance Located Type where
   locOf Signed {..}   = locOf loc
