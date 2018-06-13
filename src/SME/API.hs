@@ -67,13 +67,13 @@ data ApiCtx = ApiCtx
   , compilerState :: CompilerState
   }
 
-mkApiCtx :: SmeCtxPtr -> ApiCtx
-mkApiCtx ptr =
+mkApiCtx :: SmeCtxPtr -> Config -> ApiCtx
+mkApiCtx ptr cfg =
   ApiCtx
   { libCtx = ptr
   , tyState = mkEnv mkConfig Void
   , simState = mkEnv mkConfig emptyExt
-  , apiConf = mkConfig
+  , apiConf = cfg
   , compilerState = mkCompilerState
   }
 
@@ -108,11 +108,19 @@ loadPipe fp =
    dumpStage ResolveImport >=> doTransform >=> dumpStage Transform)
     fp
 
-postSimPipe :: SimEnv -> ApiM (BaseEnv Void)
-postSimPipe e =
-  liftApiM $
-  (doReconstruct >=> dumpStage Retyped >=> writeRetyped >=> doTypeCheck)
-    (Void <$ e)
+postSimPipe :: ApiCtx -> SimEnv -> ApiM SimEnv
+postSimPipe ctx e = do
+  res <-
+    liftApiM $
+    (doReconstruct >=>
+     dumpStage Retyped >=>
+     writeRetyped >=>
+     doTypeCheck >=>
+     dumpStage RetypeCheck)
+      (Void <$ e)
+  -- FIXME: This is a hack which can be eliminated by separating network
+  -- analysis from the simulator
+  liftIO $ initSimEnv res (libCtx ctx)
 
 genCodePipe :: FilePath -> ApiM ()
 genCodePipe fp = do
@@ -138,11 +146,18 @@ apiAction c f act = do
   freeStablePtr c
   runApiM ctx act >>= finishApiRet f
 
+apiAction' ::
+     SimCtxPtr -> (ApiCtx -> a -> ApiCtx) -> (ApiCtx -> ApiM a) -> IO Bool
+apiAction' c f act = do
+  ctx <- deRefStablePtr c
+  freeStablePtr c
+  runApiM ctx (act ctx) >>= finishApiRet f
+
 finishApiRet :: (ApiCtx -> a -> ApiCtx) -> ActRet a ->  IO Bool
 finishApiRet _ (Left ()) = return False
 finishApiRet f (Right (r, ctx)) = do
   let ctx' = f ctx r
-  ptr' <- newStablePtr ctx
+  ptr' <- newStablePtr ctx'
   sme_set_sim_state (libCtx ctx') ptr'
   return True
 
@@ -158,13 +173,13 @@ loadFile c f n arr = do
       peekCString f >>=
       (\fp ->
          runApiM
-           (mkApiCtx c)
+           (mkApiCtx c cfg)
            (do e <- loadPipe fp
                se <- initSim c e
                put
                  ApiCtx
                  { libCtx = c
-                 , tyState = e
+                 , tyState = Void <$ se
                  , simState = se
                  , apiConf = cfg
                  , compilerState = mkCompilerState
@@ -177,7 +192,7 @@ genCode c n = do
   apiAction c const (genCodePipe n')
 
 simAction :: ApiM SimEnv -> SimCtxPtr -> IO Bool
-simAction act c = apiAction c (\x e -> x { simState = e }) act
+simAction act c = apiAction c (\x e -> x {simState = e}) act
 
 propagateBuses, runProcs :: SimCtxPtr -> IO Bool
 propagateBuses = simAction runSimBuses
@@ -185,4 +200,7 @@ runProcs = simAction runSimProcs
 
 finalize :: SimCtxPtr -> IO Bool
 finalize c =
-  apiAction c (\x e -> x {tyState = e}) (runSimFinalize >>= postSimPipe)
+  apiAction'
+    c
+    (\x e -> x {tyState = Void <$ e})
+    (\x -> runSimFinalize >>= postSimPipe x)

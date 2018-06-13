@@ -850,6 +850,7 @@ data Stages
   | TypeCheck
   | CodeGen
   | Retyped
+  | RetypeCheck
   | Transform
   deriving (Eq, Show)
 
@@ -866,6 +867,7 @@ instance Read Stages where
                   --, ("optimize", Optimize)
                   , ("code-generation", CodeGen)
                   , ("typed", Retyped)
+                  , ("retype-check", RetypeCheck)
                   , ("transform", Transform)
                   ]) .
         map toLower

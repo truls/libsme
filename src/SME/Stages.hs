@@ -206,6 +206,7 @@ pipeline =
   dumpStage Retyped >=>
   writeRetyped >=>
   doTypeCheck >=>
+  dumpStage RetypeCheck >=>
   doOutput
 
 doCompile :: FilePath -> CompilerM ()
