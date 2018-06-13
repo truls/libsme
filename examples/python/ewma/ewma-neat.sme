@@ -1,9 +1,9 @@
 sync proc calc (in data, const decay)
     bus result {
-        val: int;
-        valid: bool;
+        val: i11 = 0;
+        valid: bool = false;
     };
-    var prev: i11;
+    var prev: i11 = 0;
 
 {
     if (data.valid) {
@@ -34,14 +34,14 @@ network ewma () {
     const decay2: int = 3;
 
     exposed bus stream {
-        val: int;
-        valid: bool;
+        val: int = 0;
+        valid: bool = false;
     };
 
     exposed bus output {
-        short: int;
-        long: int;
-        valid: bool;
+        short: i11 = 0;
+        long: i11 = 0;
+        valid: bool = false;
     };
 
     instance short of calc (data: stream, decay: decay1);

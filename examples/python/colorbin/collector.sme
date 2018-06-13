@@ -11,9 +11,9 @@ proc collector (in image_input)
     const thresh_high: uint = 200;
     const thresh_med: uint = 100;
 
-    var countlow: u32;
-    var countmed: u32;
-    var counthigh: u32;
+    var countlow: u32 = 0;
+    var countmed: u32 = 0;
+    var counthigh: u32 = 0;
 
     var color: u32;
 {
