@@ -37,8 +37,9 @@ import qualified Data.HashMap.Strict    as M
 import           Data.List              (intercalate, nub)
 import qualified Data.Text.IO           as TIO
 import           Options.Applicative
+import           Rainbow                (bold, brightRed, chunk, fore, putChunk,
+                                         putChunkLn, yellow, (&))
 import           System.Exit            (exitFailure)
-import           System.IO              (hPrint, stderr)
 
 import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax  (DesignFile)
@@ -212,7 +213,12 @@ doCompile fp = handleErrors $ pipeline fp >> printWarnings
 
 printWarnings :: CompilerM ()
 printWarnings =
-  unlessM (asks noWarnings) $ mapM_ (liftIO . print) =<< gets warnings
+  unlessM (asks noWarnings) $
+  mapM_ (mapM_ (liftIO . printWarning)) =<< gets warnings
+  where
+    printWarning w = do
+      putChunk $ chunk "Warning: " & fore yellow & bold
+      putChunkLn $ chunk (show w) & fore yellow
 
 handleErrors :: CompilerM a -> CompilerM a
 handleErrors act = do
@@ -234,10 +240,18 @@ handleErrors act = do
 exitOnError :: IO a -> IO a
 exitOnError act =
   try act >>= \case
-    Left (e :: SomeException) -> do
-      hPrint stderr  e
+    Left (e :: SomeException)
+     -> do
+      -- TODO: Print to stderr
+      --hPrint stderr  e
+      printError e
       exitFailure
     Right r -> return r
+  where
+    printError e = do
+      putChunk $ chunk "Error: " & fore brightRed & bold
+      putChunkLn $ chunk (show e) & fore brightRed
+
 
 compile :: Config -> IO ()
 compile c = fst <$> runCompilerM c mkCompilerState (doCompile (inputFile c))
