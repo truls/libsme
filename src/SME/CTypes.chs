@@ -102,8 +102,8 @@ peekIntVal signedness f p = do
     Unsigned -> res
 {-# INLINE peekIntVal #-}
 
-setValDef :: Bool -> Ptr R.Value -> IO ()
-setValDef b f = {# set Value.undef #} f (fromIntegral $ fromEnum b)
+setValUndef :: Bool -> Ptr R.Value -> IO ()
+setValUndef b f = {# set Value.undef #} f (fromIntegral $ fromEnum b)
 
 instance Storable R.Value where
   sizeOf _ = {# sizeof Value #}
@@ -113,19 +113,19 @@ instance Storable R.Value where
       case value of
         R.IntVal i -> do
           pokeIntVal Signed {# get Value.value.integer #} p i
-          setValDef True p
+          setValUndef False p
         R.SingleVal i -> do
           {# set Value.value.f32 #} p $ CFloat i
-          setValDef True p
+          setValUndef False p
         R.DoubleVal i -> do
           {# set Value.value.f64 #} p $ CDouble i
-          setValDef True p
+          setValUndef False p
         R.BoolVal i -> do
           {# set Value.value.boolean #} p $ i
-          setValDef True p
+          setValUndef False p
         R.ArrayVal _ _ -> error "Arrays not supported"
         R.UndefVal ->
-          setValDef False p
+          setValUndef True p
   {-# INLINE poke #-}
 
   peek p =
