@@ -19,13 +19,10 @@ import qualified Data.Set                    as S
 import qualified Data.Text                   as T
 import           Data.Tuple.Extra            (second, snd3, thd3)
 
-import           Language.SMEIL.Pretty
 import           Language.SMEIL.Syntax
 import           SME.Error
 import           SME.Representation
 import           SME.Util
-
-import           Debug.Trace
 
 type Env = BaseEnv Void
 type TopDef = BaseTopDef Void
@@ -43,20 +40,14 @@ transTopDef :: TopDef -> TrM ()
 transTopDef d = do
   let buses = directBuses (usedBuses d)
   transDefs d buses
-
   let tdn = nameOf d
   td <- lookupTopDef tdn
   td' <-
     U.transformBiM
-      (\x -> do
-         res <-
-           if busListElem buses x
-             then renameBodyName x
-             else pure x
-         traceM
-           ("Transforming " ++
-            show buses ++ " " ++ pprrString x ++ " to " ++ pprrString res)
-         return res)
+      (\x ->
+         if busListElem buses x
+           then renameBodyName x
+           else pure x)
       td
   withScope tdn $ do
     (act, td'') <- updateTopDefParams td'
@@ -146,9 +137,9 @@ toIdent t = Ident t noLoc
 -- | Concatenates the two first components of a references separated by an
 -- underscore
 mkParName :: Ref -> TrM Ident
-mkParName ref@(fstR :| (sndR:_)) =
+mkParName (fstR :| (sndR:_)) =
   let res = fstR <> toIdent "_" <> sndR
-  in trace ("Mkparname " ++ show ref ++ " res " ++ pprrString res) (pure res)
+  in pure res
 mkParName _                  = bad "Bad number of reference compounds"
 
 renameBodyName :: Name -> TrM Name
