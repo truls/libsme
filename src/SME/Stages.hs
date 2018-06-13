@@ -23,6 +23,8 @@ module SME.Stages
   , doOutput
   , handleErrors
   , doTransform
+  , dumpStage
+  , writeRetyped
   ) where
 
 import           Control.Exception.Safe (Handler (..), IOException,
@@ -90,8 +92,10 @@ optParser p =
   -- switch
   --   (long "adjust-size-bounds" <>
   --    help "Adjust size bounds in code to inferred values") <*>
-  switch (long "quiet" <> short 'q' <> help "Suppress output from simulated programs") <*>
-  switch (long "quiet" <> short 'q' <> help "Suppress output from simulated programs") <*>
+  switch
+    (long "quiet" <> short 'q' <> help "Suppress output from simulated programs") <*>
+  switch
+    (long "quiet" <> short 'q' <> help "Suppress output from simulated programs") <*>
   switch
     (long "emulate-overflows" <>
      help
@@ -110,7 +114,9 @@ optParser p =
     (strOption
        (long "param" <> short 'p' <>
         help
-          "Set a network entity parameter. Repeat this option once per parameter. ARG has the format <entity-name>:<param-name>=<value> (no spaces). Parameters in the code will override parameters set here."))
+          "Set a network entity parameter. Repeat this option once per parameter. ARG has the format <entity-name>:<param-name>=<value> (no spaces). Parameters in the code will override parameters set here.")) <*>
+  optional
+    (strOption (long "write-retyped" <> help "Write retyped program to file."))
   where
     stagesPP =
       intercalate ", " (map show [ResolveImport, TypeCheck, CodeGen]) ++
@@ -178,6 +184,14 @@ dumpStage st v = do
   whenM ((st `elem`) <$> asks dumpStages) (liftIO $ TIO.putStrLn $ pprr v)
   return v
 
+writeRetyped :: DesignFile -> CompilerM DesignFile
+writeRetyped df = asks writeTyped >>= \case
+  Just f -> do
+    liftIO $ TIO.writeFile f (pprr df)
+    return df
+  Nothing ->
+    return df
+
 pipeline :: FilePath -> CompilerM ()
 pipeline =
   doImports >=>
@@ -189,6 +203,7 @@ pipeline =
   doSimulate >=>
   doReconstruct >=>
   dumpStage Retyped >=>
+  writeRetyped >=>
   doTypeCheck >=>
   doOutput
 

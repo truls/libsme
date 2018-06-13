@@ -100,10 +100,19 @@ setError ptr e = withCString e (sme_set_error ptr)
 
 
 loadPipe :: FilePath -> ApiM (BaseEnv Void)
-loadPipe fp = liftApiM $ (doImports >=> doTypeCheck >=> doTransform) fp
+loadPipe fp =
+  liftApiM $
+  (doImports >=>
+   dumpStage ResolveImport >=>
+   doTypeCheck >=>
+   dumpStage ResolveImport >=> doTransform >=> dumpStage Transform)
+    fp
 
 postSimPipe :: SimEnv -> ApiM (BaseEnv Void)
-postSimPipe e = liftApiM $ (doReconstruct >=> doTypeCheck) (Void <$ e)
+postSimPipe e =
+  liftApiM $
+  (doReconstruct >=> dumpStage Retyped >=> writeRetyped >=> doTypeCheck)
+    (Void <$ e)
 
 genCodePipe :: FilePath -> ApiM ()
 genCodePipe fp = do

@@ -869,6 +869,7 @@ data Config = Config
   , noRangeAnnot       :: Bool
   , params             :: [String] -- [(String, [(String, String)])]
   -- ^ Entity parameters supplied as command line options.
+  , writeTyped         :: Maybe FilePath -- ^ Dump retyped program to file
   } deriving (Show)
 
 mkConfig :: Config
@@ -888,4 +889,5 @@ mkConfig =
   , noWarnings = False
   , noRangeAnnot = False
   , params = []
+  , writeTyped = Nothing
   }
