@@ -19,28 +19,28 @@
 \begin{grammar}
   <module> ::= \{ <import-stm> \} <entity> \\ \{ <entity> \}
 
-  <import-stm> ::= `import' <import-name> <qualified-specifier> `;'
-  \alt `from' <import-name> \\ `import' <ident> \{ `,' <ident> \} <qualified-specifier>
+  <import-stm> ::= `import' <import-name> [ <qualified-specifier> ] `;'
+  \alt `from' <import-name> \\ `import' <ident> \{ `,' <ident> \} [ <qualified-specifier> ]
   `;'
 
   <import-name> ::= <ident> \{ `.' <ident> \}
 
-  <qualified-specifier> ::= \{ `as' <ident> \}
+  <qualified-specifier> ::= `as' <ident>
 
   <entity> ::= <network>
   \alt <process>
 
-  <network> ::= `network' <ident> `(' [ <params> ] `)' \\`{' <network-decl> `}'
+  <network> ::= `network' <ident> `(' [ <params> ] `)' \\`{' \{ <network-decl> \} `}'
 
   <process> ::= [ `sync' | `async' ] `proc' <ident> \\ `(' [
-             <params> ] `)' \{ <declaration> \}\\ `{' \{ <statement> \} `}'
+             <params> ] `)' \{ <process-decl> \}\\ `{' \{ <statement> \} `}'
 
   <network-decl> ::= <instance>
   \alt <bus-decl>
   \alt <const-decl>
   \alt <gen-decl>
 
-  <declaration> ::= <var-decl>
+  <process-decl> ::= <var-decl>
   \alt <const-decl>
   \alt <bus-decl>
   \alt <enum-decl>
@@ -92,7 +92,7 @@
   %\alt `while' <expression> `{' \{ <statement> \} `}'
   \alt `switch' <expression> \\ `{' <switch-case> \{ <switch-case> \} [ `default' `{' <statement> \{ <statement> \} `}' ] `}'
   \alt `trace' `(' <format-string> \{ `,' <expression> \} )`;'
-  \alt `assert' `(' <expression> [ `,' <string> ] `)'`;'
+  \alt `assert' `(' <expression> [ `,' <string-literal> ] `)'`;'
   %\alt `barrier' `;'
   \alt `break' `;'
   %\alt `return' [ <expression> ] `;'
@@ -141,15 +141,15 @@
 
   <literal> ::= <integer>
   \alt <floating>
-  \alt `"'\{ <string-char> \}`"' (String literal)
+  \alt <string-literal>
   \alt `[' <integer> \{ `,' <integer> \} `]' (Array literal)  
   % TODO: Temporary limitation
   %\alt `[' <expression> \{ `,' <expression> \} `]' (array literal)
   \alt `true'
   \alt `false'
-  \alt <special-literal>
+  \alt `\'U' (Undefined value)
 
-  <special-literal> ::= `\'U' (Undefined value)
+  <string-literal> ::= `"'\{ <string-char> \}`"'
 
   <type> ::= `i' <integer> (signed integer)
   \alt `int' (arbitrary-width signed integer)
@@ -167,7 +167,7 @@
   \alt <name> `.' <name> (hierarchical accessor)
   \alt <name> `[' <array-index> `]' (array element access)
 
-  <array-index> :: `*' (wildcard)
+  <array-index> ::= `*' (wildcard)
   \alt <expression> (element index)
 
   <integer> ::= <number> \{ <number> \} (decimal number)
